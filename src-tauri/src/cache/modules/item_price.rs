@@ -1,16 +1,15 @@
-use std::{
-    fs::File,
-    io::{Read, Write},
-    ops::Sub,
-    path::PathBuf,
-};
+use std::path::PathBuf;
 
-use entity::sub_type::{self, SubType};
+use entity::sub_type::SubType;
 use eyre::eyre;
 
 use crate::{
     cache::{client::CacheClient, types::item_price_info::ItemPriceInfo},
-    utils::modules::{error::AppError, logger},
+    utils::modules::{
+        error::AppError,
+        logger::{self, LoggerOptions},
+        states,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -77,51 +76,64 @@ impl ItemPriceModule {
         }
     }
     pub async fn download_cache_data(&mut self) -> Result<(), AppError> {
-        let qf = self.client.qf.lock()?.clone();
-        let price_data = qf.price().get_json_file().await?;
+        let qf = states::qf_client()?;
+        let price_data = qf.item().get_price_json_file().await?;
         match self.client.write_text_to_file(&self.path, price_data) {
             Ok(_) => {
-                logger::info_con(&self.component, "Item prices have been updated.");
+                logger::info(
+                    &self.component,
+                    "Item prices have been updated.",
+                    LoggerOptions::default(),
+                );
             }
             Err(e) => return Err(e),
         }
         Ok(())
     }
     pub async fn load(&mut self) -> Result<(), AppError> {
-        let qf = self.client.qf.lock()?.clone();
+        let qf = states::qf_client()?;
         let current_cache_id = self.get_cache_id()?;
-        logger::info_con(
-            &self.component,
-            format!("Current price cache id: {}", current_cache_id).as_str(),
-        );
-        let remote_cache_id = match qf.price().get_cache_id().await {
+        let remote_cache_id = match qf.item().get_price_cache_id().await {
             Ok(id) => id,
             Err(e) => {
-                logger::error_con(
+                logger::error(
                     &self.component,
                     format!(
                         "There was an error fetching the price cache id: {}",
                         e.get_info().0
                     )
                     .as_str(),
+                    LoggerOptions::default(),
                 );
-                logger::info_con(&self.component, "Using the current price cache id");
+                logger::info(
+                    &self.component,
+                    "Using the current price cache id",
+                    LoggerOptions::default(),
+                );
                 current_cache_id.clone()
             }
         };
-        logger::info_con(
-            &self.component,
-            format!("Remote price cache id: {}", remote_cache_id).as_str(),
-        );
+
         if current_cache_id != remote_cache_id {
-            logger::info_con(
+            logger::info(
                 &self.component,
                 "Price cache id mismatch, downloading new price cache data",
+                LoggerOptions::default(),
             );
             self.download_cache_data().await?;
             self.update_cache_id(remote_cache_id)?;
         }
-        let content = self.client.read_text_from_file(&self.path)?;
+        let content = match self.client.read_text_from_file(&self.path) {
+            Ok(c) => c,
+            Err(_) => {
+                logger::critical(
+                    &self.component,
+                    "Failed to read ItemPriceModule file, using empty data",
+                    LoggerOptions::default().set_file("ItemPriceModule_load.log"),
+                );
+                "[]".to_string()
+            }
+        };
         let items: Vec<ItemPriceInfo> = serde_json::from_str(&content).map_err(|e| {
             AppError::new(
                 self.get_component("Load").as_str(),
@@ -133,24 +145,19 @@ impl ItemPriceModule {
         Ok(())
     }
 
-    pub fn get_item_price(
+    pub fn get_item_price2(
         &self,
-        url_name: &str,
+        wfm_id: &str,
         sub_type: Option<SubType>,
-        order_type: &str,
     ) -> Result<ItemPriceInfo, AppError> {
         let items = self.get_all()?;
         let item = items
             .iter()
-            .find(|item| {
-                item.url_name == url_name
-                    && item.order_type == order_type
-                    && item.sub_type == sub_type
-            })
+            .find(|item| item.wfm_id == wfm_id && item.sub_type == sub_type)
             .ok_or_else(|| {
                 AppError::new(
                     &self.component,
-                    eyre!(format!("Item not found: {}", url_name)),
+                    eyre!(format!("Item not found: {}", wfm_id)),
                 )
             })?;
         Ok(item.clone())

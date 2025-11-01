@@ -7,11 +7,15 @@ import { useTranslateComponent } from "@hooks/useTranslate.hook";
 import { useAppContext } from "@contexts/app.context";
 import { useEffect, useState } from "react";
 import { NavbarLinkProps, NavbarMinimalColored } from "@components/NavbarMinimalColored";
-import { SvgIcon, SvgType } from "@components/SvgIcon";
 import { Header } from "@components/Header";
 import api from "@api/index";
 import { useAuthContext } from "@contexts/auth.context";
-import { Ticker } from "../../Ticker";
+import { Ticker } from "@components/Ticker";
+import { QuantframeApiTypes } from "$types";
+import { open } from "@tauri-apps/plugin-shell";
+import facTradingAnalytics from "@icons/faTradingAnalytics";
+import faWarframeMarket from "@icons/facWarframeMarket";
+
 export function LogInLayout() {
   // States
   const [lastPage, setLastPage] = useState<string>("");
@@ -30,7 +34,7 @@ export function LogInLayout() {
       align: "top",
       id: "home",
       link: "/",
-      icon: <FontAwesomeIcon icon={faHome} />,
+      icon: <FontAwesomeIcon size={"lg"} icon={faHome} />,
       label: useTranslateNavBar("home"),
       onClick: (e: NavbarLinkProps) => handleNavigate(e),
     },
@@ -38,7 +42,7 @@ export function LogInLayout() {
       align: "top",
       id: "live-trading",
       link: "live-trading",
-      icon: <FontAwesomeIcon icon={faGlobe} />,
+      icon: <FontAwesomeIcon size={"lg"} icon={faGlobe} />,
       label: useTranslateNavBar("live_trading"),
       onClick: (e: NavbarLinkProps) => handleNavigate(e),
     },
@@ -54,26 +58,33 @@ export function LogInLayout() {
           size={16}
           position="top-start"
         >
-          <FontAwesomeIcon icon={faEnvelope} />
+          <FontAwesomeIcon size={"lg"} icon={faEnvelope} />
         </Indicator>
       ),
       onClick: (e: NavbarLinkProps) => handleNavigate(e),
       label: useTranslateNavBar("chats"),
     },
-    // { link: "statistics", icon: <FontAwesomeIcon icon={faChartSimple} />, label: useTranslate("statistics") },
     {
       align: "top",
       id: "warframe_market",
       link: "warframe-market",
-      icon: <SvgIcon svgProp={{ width: 32, height: 32, fill: "#d5d7e0" }} iconType={SvgType.Default} iconName={"wfm_logo"} />,
+      icon: <FontAwesomeIcon size={"lg"} icon={faWarframeMarket} />,
       label: useTranslateNavBar("warframe_market"),
+      onClick: (e: NavbarLinkProps) => handleNavigate(e),
+    },
+    {
+      align: "top",
+      id: "trading_analytics",
+      link: "trading_analytics",
+      icon: <FontAwesomeIcon size={"lg"} icon={facTradingAnalytics} />,
+      label: useTranslateNavBar("trading_analytics"),
       onClick: (e: NavbarLinkProps) => handleNavigate(e),
     },
     {
       align: "top",
       id: "debug",
       link: "debug",
-      icon: <FontAwesomeIcon icon={faDesktop} />,
+      icon: <FontAwesomeIcon size={"lg"} icon={faDesktop} />,
       label: useTranslateNavBar("debug"),
       onClick: (e: NavbarLinkProps) => handleNavigate(e),
     },
@@ -82,7 +93,7 @@ export function LogInLayout() {
       id: "test",
       link: "test",
       hide: !import.meta.env.DEV,
-      icon: <FontAwesomeIcon icon={faBug} color="red" />,
+      icon: <FontAwesomeIcon size={"lg"} icon={faBug} color="red" />,
       label: useTranslateNavBar("test"),
       onClick: (e: NavbarLinkProps) => handleNavigate(e),
     },
@@ -90,7 +101,7 @@ export function LogInLayout() {
       align: "bottom",
       id: "nav_about",
       link: "about",
-      icon: <FontAwesomeIcon icon={faInfoCircle} />,
+      icon: <FontAwesomeIcon size={"lg"} icon={faInfoCircle} />,
       label: useTranslateNavBar("about"),
       onClick: (e: NavbarLinkProps) => handleNavigate(e),
     },
@@ -104,7 +115,7 @@ export function LogInLayout() {
   }, [user]);
   const handleNavigate = (link: NavbarLinkProps) => {
     console.log("Navigate to: ", link);
-    if (link.web) window.open(link.link, "_blank");
+    if (link.web) open(link.link, "_blank");
     else navigate(link.link);
 
     if (link.id == lastPage || !link.id) return;
@@ -114,6 +125,20 @@ export function LogInLayout() {
         api.analytics.sendMetric("Active_Page", link.id);
         break;
     }
+  };
+  const handleAlertClick = (alert: QuantframeApiTypes.AlertDto) => {
+    console.log("Alert clicked: ", alert);
+    if (!alert.properties) return;
+    const { event, payload } = alert.properties as { event: string; payload: any };
+    if (!event) return;
+    switch (event) {
+      case "open_url":
+        if (payload) open(payload);
+        break;
+      default:
+        break;
+    }
+    console.log("Alert clicked: ", alert);
   };
   return (
     <AppShell
@@ -126,7 +151,19 @@ export function LogInLayout() {
     >
       <AppShell.Header withBorder={false}>
         <Header />
-        {alerts.length > 0 && <Ticker data={alerts.map((alert) => ({ label: alert.context }))} />}
+        {alerts.length > 0 && (
+          <Ticker
+            loop
+            data={alerts.map((alert) => ({
+              label: alert.context,
+              props: {
+                "data-alert-type": alert.type,
+                "data-color-mode": "text",
+              },
+              onClick: alert.properties ? () => handleAlertClick(alert) : undefined,
+            }))}
+          />
+        )}
       </AppShell.Header>
 
       <AppShell.Navbar withBorder={false}>

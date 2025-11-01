@@ -1,10 +1,9 @@
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use serde_json::{json, Value};
+use serde_json::json;
 use tauri::{Manager, State};
 use tokio::time::Instant;
 
@@ -18,7 +17,10 @@ use crate::{
             log_level::LogLevel,
             ui_events::{UIEvent, UIOperationEvent},
         },
-        modules::error::{self, ApiResult, AppError},
+        modules::{
+            error::{self, ApiResult, AppError},
+            states,
+        },
     },
     APP,
 };
@@ -44,7 +46,7 @@ impl AlertModule {
         self.client.update_alert_module(self.clone());
     }
     pub fn init(&mut self) -> Result<(), AppError> {
-        let notify = self.client.notify.lock().unwrap().clone();
+        let notify = states::notify_client()?;
         if self.is_init {
             return Ok(());
         }
@@ -90,7 +92,7 @@ impl AlertModule {
                                 }
                             }
                             Err(e) => {
-                                error::create_log_file("alerts.log".to_string(), &e);
+                                error::create_log_file("alerts.log", &e);
                             }
                         };
                     }
@@ -103,7 +105,7 @@ impl AlertModule {
     pub async fn get_alerts(&self) -> Result<Paginated<Alert>, AppError> {
         match self
             .client
-            .get::<Paginated<Alert>>("alert?page=0&limit=25&enabled=true", false)
+            .get::<Paginated<Alert>>("alert?page=1&limit=25&enabled=true", false)
             .await
         {
             Ok(ApiResult::Success(payload, _headers)) => {

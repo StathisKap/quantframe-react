@@ -1,42 +1,43 @@
-import { useTranslateEnums, useTranslatePages } from "@hooks/useTranslate.hook";
-import { getCssVariable, GetSubTypeDisplay, CreateTradeMessage } from "@utils/helper";
-import { useEffect, useState } from "react";
-import { CreateStockItem, StockItem, StockStatus, UpdateStockItem, SellStockItem } from "@api/types";
 import { Box, Grid, Group, NumberFormatter, Text } from "@mantine/core";
-import { useMutation } from "@tanstack/react-query";
-import api from "@api/index";
-import { notifications } from "@mantine/notifications";
-import { faComment, faEdit, faEye, faEyeSlash, faHammer, faInfo, faPen, faTrashCan } from "@fortawesome/free-solid-svg-icons";
-import { modals } from "@mantine/modals";
+import { TauriTypes } from "$types";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useTranslateEnums, useTranslatePages } from "@hooks/useTranslate.hook";
 import { useHasAlert } from "@hooks/useHasAlert.hook";
-import { StockItemInfo } from "@components/Modals/StockItemInfo";
-import { ColorInfo } from "@components/ColorInfo";
-import { StatsWithSegments } from "@components/StatsWithSegments";
-import { ActionWithTooltip } from "@components/ActionWithTooltip";
-import { ButtonInterval } from "@components/ButtonInterval";
-import { Loading } from "@components/Loading";
+import api, { OnTauriEvent } from "@api/index";
+import { SearchField } from "@components/SearchField";
+import { DataTable } from "mantine-datatable";
 import { TextTranslate } from "@components/TextTranslate";
-import { UpdateItemBulk } from "@components/Forms/UpdateItemBulk";
+import { getCssVariable, GetSubTypeDisplay } from "@utils/helper";
+import { useEffect, useState } from "react";
+import { StatsWithSegments } from "@components/StatsWithSegments";
+import { ColorInfo } from "@components/ColorInfo";
 import { CreateStockItemForm } from "@components/Forms/CreateStockItem";
+import { ActionWithTooltip } from "@components/ActionWithTooltip";
+import { faEdit, faEye, faEyeSlash, faHammer, faInfo, faPen, faTrashCan } from "@fortawesome/free-solid-svg-icons";
 import { useLiveScraperContext } from "@contexts/liveScraper.context";
-import { useStockContextContext } from "@contexts/stock.context";
-import { DataTableSearch } from "@components/DataTableSearch";
-import { Query } from "@utils/search.helper";
 import classes from "../../LiveTrading.module.css";
+import { notifications } from "@mantine/notifications";
+import { useLocalStorage } from "@mantine/hooks";
+import { ButtonIntervals } from "@components/ButtonIntervals";
+import { modals } from "@mantine/modals";
+import { StockItemInfo } from "@components/Modals/StockItemInfo";
+import { UpdateItemBulk } from "@components/Forms/UpdateItemBulk";
+
 interface StockItemPanelProps {}
 export const StockItemPanel = ({}: StockItemPanelProps) => {
   // States Context
-  const { items } = useStockContextContext();
   const { is_running } = useLiveScraperContext();
 
   // States For DataGrid
-  const [query, setQuery] = useState<string>("");
-  const [filters, setFilters] = useState<Query>({});
-  const [selectedRecords, setSelectedRecords] = useState<StockItem[]>([]);
+  const [queryData, setQueryData] = useLocalStorage<TauriTypes.StockItemControllerGetListParams>({
+    key: "stock_item_query_key",
+    getInitialValueInEffect: false,
+    defaultValue: { page: 1, limit: 10 },
+  });
+  const [loadingRows, setLoadingRows] = useState<string[]>([]);
 
-  const [filterStatus, setFilterStatus] = useState<StockStatus | undefined>(undefined);
-  const [statusCount, setStatusCount] = useState<{ [key: string]: number }>({}); // Count of each status
-
+  // States
+  const [selectedRecords, setSelectedRecords] = useState<TauriTypes.StockItem[]>([]);
   const [segments, setSegments] = useState<{ label: string; count: number; part: number; color: string }[]>([]);
 
   // Translate general
@@ -60,35 +61,25 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
     useTranslate(`prompts.${key}`, { ...context }, i18Key);
   const useTranslatePrompt = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
     useTranslateTabItem(`prompts.${key}`, { ...context }, i18Key);
-  const useTranslateNotifications = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
-    useTranslate(`notifications.${key}`, { ...context }, i18Key);
+  // const useTranslateNotifications = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
+  //   useTranslate(`notifications.${key}`, { ...context }, i18Key);
   const useTranslateButtons = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
     useTranslateTabItem(`buttons.${key}`, { ...context }, i18Key);
 
-  // Update Database Rows
+  // Queys
+  let { data, isFetching, refetch } = useQuery({
+    queryKey: ["stock_item", queryData.page, queryData.limit, queryData.sort_by, queryData.sort_direction, queryData.status],
+    queryFn: () => api.stock.item.getAll(queryData),
+    refetchOnWindowFocus: true,
+  });
+  let { data: overviewData, refetch: refetchOverview } = useQuery({
+    queryKey: ["stock_item_overview"],
+    queryFn: () => api.stock.item.getOverview(),
+    refetchOnWindowFocus: true,
+  });
+  // Member
   useEffect(() => {
-    let filter: Query = {
-      $or: [],
-    };
-    if (!items) return;
-
-    setStatusCount(
-      Object.values(StockStatus).reduce((acc, status) => {
-        acc[status] = items.filter((item) => item.status === status).length;
-        return acc;
-      }, {} as { [key: string]: number })
-    );
-
-    if (filterStatus) filter = { $match: { status: filterStatus } };
-    if (query) filter = { ...filter, $or: [{ item_name: { $contains: query } }] };
-
-    setFilters(filter);
-    setSelectedRecords([]);
-  }, [items, query, filterStatus]);
-
-  // Calculate Stats
-  useEffect(() => {
-    if (!items) return;
+    const items = data?.results || [];
     const totalPurchasePrice = items.reduce((a, b) => a + (b.bought || 0) * b.owned, 0);
     const totalListedPrice = items.reduce((a, b) => a + (b.list_price || 0) * b.owned, 0);
     const totalProfit = totalListedPrice > 0 ? totalListedPrice - totalPurchasePrice : 0;
@@ -105,32 +96,19 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
       { label: useTranslateSegments("listed"), count: totalListedPrice, part: listedPercentage, color: getCssVariable("--positive-value") },
       { label: useTranslateSegments("profit"), count: totalProfit, part: profitPercentage, color: getCssVariable("--profit-value") },
     ]);
-  }, [items]);
-  // Functions
-  const CreateWTSMessages = async (items: StockItem[]) => {
-    items = items
-      .filter((x) => !!x.list_price)
-      .sort((a, b) => {
-        if (a.list_price && b.list_price) return b.list_price - a.list_price;
-        return 0;
-      });
-    let msg = CreateTradeMessage(
-      "WTS Rivens",
-      items.map((x) => ({ price: x.list_price || 0, name: `[${x.item_name}]` })),
-      ""
-    );
-    notifications.show({ title: useTranslateNotifications("copied.title"), message: msg.trim(), color: "green.7" });
-    navigator.clipboard.writeText(msg.trim());
-  };
+  }, [data, overviewData]);
+
   // Mutations
   const createStockMutation = useMutation({
-    mutationFn: (data: CreateStockItem) => api.stock.item.create(data),
+    mutationFn: (data: TauriTypes.CreateStockItem) => api.stock.item.create(data),
     onSuccess: async (u) => {
       notifications.show({
         title: useTranslateSuccess("create_stock.title"),
         message: useTranslateSuccess("create_stock.message", { name: u.item_name }),
         color: "green.7",
       });
+      refetch();
+      refetchOverview();
     },
     onError: (e) => {
       console.error(e);
@@ -138,8 +116,12 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
     },
   });
   const updateStockMutation = useMutation({
-    mutationFn: (data: UpdateStockItem) => api.stock.item.update(data),
+    mutationFn: (data: TauriTypes.UpdateStockItem) => api.stock.item.update(data),
+    onMutate: (row) => setLoadingRows((prev) => [...prev, `${row.id}`]),
+    onSettled: (_data, _error, variables) => setLoadingRows((prev) => prev.filter((id) => id !== `${variables.id}`)),
     onSuccess: async (u) => {
+      refetch();
+      refetchOverview();
       notifications.show({
         title: useTranslateSuccess("update_stock.title"),
         message: useTranslateSuccess("update_stock.message", { name: u.item_name }),
@@ -152,13 +134,17 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
     },
   });
   const updateBulkStockMutation = useMutation({
-    mutationFn: (data: { ids: number[]; entry: UpdateStockItem }) => api.stock.item.updateBulk(data.ids, data.entry),
+    mutationFn: (data: { ids: number[]; entry: TauriTypes.UpdateStockItem }) => api.stock.item.updateBulk(data.ids, data.entry),
+    onMutate: (row) => setLoadingRows((prev) => [...prev, ...row.ids.map((id) => `${id}`)]),
+    onSettled: (_data, _error, variables) => setLoadingRows((prev) => prev.filter((id) => !variables.ids.includes(Number(id)))),
     onSuccess: async (u) => {
       notifications.show({
         title: useTranslateSuccess("update_bulk_stock.title"),
         message: useTranslateSuccess("update_bulk_stock.message", { count: u }),
         color: "green.7",
       });
+      refetch();
+      refetchOverview();
     },
     onError: (e) => {
       console.error(e);
@@ -170,8 +156,18 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
     },
   });
   const sellStockMutation = useMutation({
-    mutationFn: (data: SellStockItem) => api.stock.item.sell(data),
+    mutationFn: (data: TauriTypes.SellStockItem) => api.stock.item.sell(data),
+    onMutate: (row) => setLoadingRows((prev) => [...prev, `${row.id}`]),
+    onSettled: (_data, _error, variables) => setLoadingRows((prev) => prev.filter((id) => id !== `${variables.id}`)),
     onSuccess: async (u) => {
+      console.log("Sell Stock Mutation Success:", u);
+      refetch();
+      refetchOverview();
+      // queryClient.setQueryData(queryKey, (oldData: TauriTypes.StockItemControllerGetListData) => {
+      //   if (!oldData || !oldData.results) return oldData;
+      //   const updatedResults = oldData.results.map((item) => (item.id === u.id ? u : item));
+      //   return { ...oldData, results: updatedResults };
+      // });
       notifications.show({
         title: useTranslateSuccess("sell_stock.title"),
         message: useTranslateSuccess("sell_stock.message", { name: u.item_name }),
@@ -185,7 +181,11 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
   });
   const deleteStockMutation = useMutation({
     mutationFn: (id: number) => api.stock.item.delete(id),
+    onMutate: (row) => setLoadingRows((prev) => [...prev, `${row}`]),
+    onSettled: (_data, _error, variables) => setLoadingRows((prev) => prev.filter((id) => id !== `${variables}`)),
     onSuccess: async () => {
+      refetch();
+      refetchOverview();
       notifications.show({
         title: useTranslateSuccess("delete_stock.title"),
         message: useTranslateSuccess("delete_stock.message"),
@@ -199,7 +199,11 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
   });
   const deleteBulkStockMutation = useMutation({
     mutationFn: (ids: number[]) => api.stock.item.deleteBulk(ids),
+    onMutate: (rows) => setLoadingRows((prev) => [...prev, ...rows.map((id) => `${id}`)]),
+    onSettled: (_data, _error, variables) => setLoadingRows((prev) => prev.filter((id) => !variables.includes(Number(id)))),
     onSuccess: async () => {
+      refetch();
+      refetchOverview();
       notifications.show({
         title: useTranslateSuccess("delete_bulk_stock.title"),
         message: useTranslateSuccess("delete_bulk_stock.message"),
@@ -215,7 +219,6 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
       });
     },
   });
-
   // Modal's
   const OpenMinimumPriceModal = (id: number, minimum_price: number) => {
     modals.openContextModal({
@@ -244,7 +247,7 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
     });
   };
 
-  const OpenSellModal = (stock: StockItem) => {
+  const OpenSellModal = (stock: TauriTypes.StockItem) => {
     modals.openContextModal({
       modal: "prompt",
       title: useTranslateBasePrompt("sell.title"),
@@ -263,14 +266,14 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
         onConfirm: async (data: { sell: number }) => {
           if (!stock) return;
           const { sell } = data;
-          await sellStockMutation.mutateAsync({ url: stock.wfm_url, sub_type: stock.sub_type, price: sell, quantity: 1, is_from_order: false });
+          await sellStockMutation.mutateAsync({ id: stock.id, wfm_url: stock.wfm_url, sub_type: stock.sub_type, price: sell, quantity: 1 });
         },
         onCancel: (id: string) => modals.close(id),
       },
     });
   };
 
-  const OpenInfoModal = (item: StockItem) => {
+  const OpenInfoModal = (item: TauriTypes.StockItem) => {
     modals.open({
       size: "100%",
       title: item.item_name,
@@ -278,7 +281,7 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
     });
   };
 
-  const OpenUpdateModal = (items: UpdateStockItem[]) => {
+  const OpenUpdateModal = (items: TauriTypes.UpdateStockItem[]) => {
     modals.open({
       title: useTranslatePrompt("update_bulk.title"),
       children: (
@@ -291,30 +294,36 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
       ),
     });
   };
+
+  useEffect(() => {
+    OnTauriEvent<any>(TauriTypes.Events.RefreshStockItems, () => {
+      refetch();
+      refetchOverview();
+    });
+    return () => api.events.CleanEvent(TauriTypes.Events.RefreshStockItems);
+  }, []);
   return (
     <Box>
       <Grid>
         <Grid.Col span={8}>
-          <CreateStockItemForm
-            disabled={createStockMutation.isPending || updateStockMutation.isPending || sellStockMutation.isPending || deleteStockMutation.isPending}
-            onSubmit={async (item) => {
-              createStockMutation.mutate({ ...item, is_from_order: false });
-            }}
-          />
+          <CreateStockItemForm onSubmit={async (item) => createStockMutation.mutate(item)} />
           <Group gap={"md"} mt={"md"}>
-            {Object.values(StockStatus).map((status) => (
+            {overviewData?.map((entry) => (
               <ColorInfo
-                active={status == filterStatus}
-                key={status}
-                onClick={() => {
-                  setFilterStatus((s) => (s === status ? undefined : status));
-                }}
+                active={entry.key == queryData.status}
+                key={entry.key}
+                onClick={() =>
+                  setQueryData((prev) => ({
+                    ...prev,
+                    status: (entry.key as TauriTypes.StockStatus) == prev.status ? undefined : (entry.key as TauriTypes.StockStatus),
+                  }))
+                }
                 infoProps={{
                   "data-color-mode": "bg",
-                  "data-stock-status": status,
+                  "data-stock-status": entry.key,
                 }}
-                text={useTranslateStockStatus(`${status}`) + `${statusCount[status] == 0 ? "" : ` (${statusCount[status]})`}`}
-                tooltip={useTranslateStockStatus(`details.${status}`)}
+                text={useTranslateStockStatus(`${entry.key}`) + ` (${entry.count})`}
+                tooltip={useTranslateStockStatus(`details.${entry.key}`)}
               />
             ))}
           </Group>
@@ -323,28 +332,21 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
           <StatsWithSegments showPercent segments={segments} />
         </Grid.Col>
       </Grid>
-      <DataTableSearch
-        className={`${classes.databaseStockItems} ${useHasAlert() ? classes.alert : ""} ${is_running ? classes.running : ""}`}
-        mt={"md"}
-        records={items || []}
-        customRowAttributes={(record) => {
-          return {
-            "data-color-mode": "box-shadow",
-            "data-stock-status": record.status,
-          };
-        }}
-        query={query}
-        filters={filters}
-        onSearchChange={(text) => setQuery(text)}
-        rightSectionWidth={115}
+      <SearchField
+        value={queryData.query || ""}
+        onSearch={() => refetch()}
+        onChange={(text) => setQueryData((prev) => ({ ...prev, query: text }))}
+        rightSectionWidth={95}
         rightSection={
           <Group gap={5}>
             <ActionWithTooltip
               tooltip={useTranslateButtons("update_bulk.tooltip")}
               icon={faEdit}
               color={"green.7"}
+              iconProps={{ size: "sm" }}
               actionProps={{
                 disabled: selectedRecords.length < 1,
+                size: "sm",
               }}
               onClick={(e) => {
                 e.stopPropagation();
@@ -355,8 +357,10 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
               tooltip={useTranslateButtons("delete_bulk.tooltip")}
               icon={faTrashCan}
               color={"red.7"}
+              iconProps={{ size: "sm" }}
               actionProps={{
                 disabled: selectedRecords.length < 1,
+                size: "sm",
               }}
               onClick={async (e) => {
                 e.stopPropagation();
@@ -368,37 +372,42 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
                 });
               }}
             />
-            <ActionWithTooltip
-              tooltip={useTranslateButtons("wts.tooltip")}
-              icon={faComment}
-              color={"green.7"}
-              actionProps={{
-                disabled: selectedRecords.length < 1,
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                CreateWTSMessages(selectedRecords);
-              }}
-            />
           </Group>
         }
-        customLoader={<Loading />}
-        fetching={
-          createStockMutation.isPending ||
-          updateStockMutation.isPending ||
-          sellStockMutation.isPending ||
-          deleteStockMutation.isPending ||
-          updateBulkStockMutation.isPending ||
-          deleteBulkStockMutation.isPending
-        }
-        idAccessor={"id"}
+      />
+      <DataTable
+        className={`${classes.databaseStockItems} ${useHasAlert() ? classes.alert : ""} ${is_running ? classes.running : ""}`}
+        customRowAttributes={(record) => {
+          return {
+            "data-color-mode": "box-shadow",
+            "data-stock-status": record.status,
+          };
+        }}
+        mt={"md"}
+        striped
+        fetching={isFetching}
+        records={data?.results || []}
+        page={queryData.page || 1}
+        onPageChange={(page) => setQueryData((prev) => ({ ...prev, page }))}
+        totalRecords={data?.total}
+        recordsPerPage={queryData.limit || 10}
+        recordsPerPageOptions={[5, 10, 15, 20, 25, 50, 100]}
+        onRecordsPerPageChange={(limit) => setQueryData((prev) => ({ ...prev, limit }))}
         selectedRecords={selectedRecords}
         onSelectedRecordsChange={setSelectedRecords}
+        sortStatus={{
+          columnAccessor: queryData.sort_by || "name",
+          direction: queryData.sort_direction || "desc",
+        }}
+        onSortStatusChange={(sort) => {
+          if (!sort || !sort.columnAccessor) return;
+          setQueryData((prev) => ({ ...prev, sort_by: sort.columnAccessor as string, sort_direction: sort.direction }));
+        }}
         onCellClick={({ record, column }) => {
           switch (column.accessor) {
             case "item_name":
               navigator.clipboard.writeText(record.item_name);
-              notifications.show({ title: useTranslateNotifications("copied.title"), message: record.item_name, color: "green.7" });
+              notifications.show({ title: useTranslate("notifications.copied.title"), message: record.item_name, color: "green.7" });
               break;
           }
         }}
@@ -428,30 +437,19 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
           {
             accessor: "minimum_price",
             width: 310,
+            sortable: true,
             title: useTranslateDataGridBaseColumns("minimum_price.title"),
             render: ({ id, minimum_price }) => (
               <Group gap={"sm"} justify="space-between">
                 <Text>{minimum_price || "N/A"}</Text>
                 <Group gap={"xs"}>
-                  <ButtonInterval
-                    color="red.7"
+                  <ButtonIntervals
                     intervals={[5, 10]}
-                    prefix="-"
-                    OnClick={async (int) => {
+                    minimum_price={minimum_price || 0}
+                    OnClick={async (val) => {
                       if (!id) return;
-                      minimum_price = minimum_price || 0;
-                      if (minimum_price - int < 0) return;
-                      await updateStockMutation.mutateAsync({ id, minimum_price: minimum_price - int });
-                    }}
-                  />
-                  <ButtonInterval
-                    color="green.7"
-                    intervals={[5, 10]}
-                    prefix="+"
-                    OnClick={async (int) => {
-                      if (!id) return;
-                      minimum_price = minimum_price || 0;
-                      await updateStockMutation.mutateAsync({ id, minimum_price: minimum_price + int });
+                      console.log("Update minimum price to:", val);
+                      await updateStockMutation.mutateAsync({ id, minimum_price: val });
                     }}
                   />
                   <ActionWithTooltip
@@ -471,10 +469,12 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
           },
           {
             accessor: "list_price",
+            sortable: true,
             title: useTranslateDataGridBaseColumns("list_price"),
           },
           {
             accessor: "owned",
+            sortable: true,
             title: useTranslateDataGridColumns("owned"),
           },
           {
@@ -486,6 +486,7 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
                 <ActionWithTooltip
                   tooltip={useTranslateDataGridBaseColumns("actions.buttons.sell_manual.tooltip")}
                   icon={faPen}
+                  loading={loadingRows.includes(`${row.id}`)}
                   color={"green.7"}
                   actionProps={{ size: "sm" }}
                   iconProps={{ size: "xs" }}
@@ -497,23 +498,25 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
                 <ActionWithTooltip
                   tooltip={useTranslateDataGridBaseColumns("actions.buttons.sell_auto.tooltip")}
                   icon={faHammer}
+                  loading={loadingRows.includes(`${row.id}`)}
                   actionProps={{ disabled: !row.list_price, size: "sm" }}
                   iconProps={{ size: "xs" }}
                   onClick={async (e) => {
                     e.stopPropagation();
                     if (!row.id || !row.list_price) return;
                     await sellStockMutation.mutateAsync({
-                      url: row.wfm_url,
+                      id: row.id,
+                      wfm_url: row.wfm_url,
                       sub_type: row.sub_type,
                       price: row.list_price,
                       quantity: 1,
-                      is_from_order: false,
                     });
                   }}
                 />
                 <ActionWithTooltip
                   tooltip={useTranslateDataGridBaseColumns(`actions.buttons.hide.${row.is_hidden ? "disabled_tooltip" : "enabled_tooltip"}`)}
                   icon={row.is_hidden ? faEyeSlash : faEye}
+                  loading={loadingRows.includes(`${row.id}`)}
                   color={`${row.is_hidden ? "red.7" : "green.7"}`}
                   actionProps={{ size: "sm" }}
                   iconProps={{ size: "xs" }}
@@ -525,6 +528,7 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
                 <ActionWithTooltip
                   tooltip={useTranslateDataGridBaseColumns("actions.buttons.info.tooltip")}
                   icon={faInfo}
+                  loading={loadingRows.includes(`${row.id}`)}
                   actionProps={{ size: "sm" }}
                   iconProps={{ size: "xs" }}
                   onClick={(e) => {
@@ -536,6 +540,7 @@ export const StockItemPanel = ({}: StockItemPanelProps) => {
                   tooltip={useTranslateDataGridBaseColumns("actions.buttons.delete.tooltip")}
                   color={"red.7"}
                   icon={faTrashCan}
+                  loading={loadingRows.includes(`${row.id}`)}
                   actionProps={{ size: "sm" }}
                   iconProps={{ size: "xs" }}
                   onClick={async (e) => {

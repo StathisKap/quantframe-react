@@ -1,7 +1,7 @@
 import { Text, Box, Divider, Group, Pagination, ScrollArea, SimpleGrid } from "@mantine/core";
 import { useEffect, useState } from "react";
-import { Wfm } from "$types/index";
-import { faFileImport, faRefresh, faTrashCan } from "@fortawesome/free-solid-svg-icons";
+import { WFMarketTypes } from "$types/index";
+import { faRefresh, faTrashCan } from "@fortawesome/free-solid-svg-icons";
 import { paginate } from "@utils/helper";
 import { useTranslatePages } from "@hooks/useTranslate.hook";
 import api from "@api/index";
@@ -12,9 +12,8 @@ import { ActionWithTooltip } from "@components/ActionWithTooltip";
 import { AuctionListItem } from "@components/AuctionListItem";
 import { Loading } from "@components/Loading";
 import { SearchField } from "@components/SearchField";
-import { useStockContextContext } from "@contexts/stock.context";
 import { useWarframeMarketContextContext } from "@contexts/warframeMarket.context";
-import { searchProperties, Query } from "@utils/search.helper";
+import { ApplyFilter, ComplexFilter, Operator } from "@utils/filter.helper";
 import classes from "../../WarframeMarket.module.css";
 import { useHasAlert } from "@hooks/useHasAlert.hook";
 interface AuctionPanelProps {}
@@ -25,26 +24,29 @@ export const AuctionPanel = ({}: AuctionPanelProps) => {
   const pageSizes = [1, 5, 10, 15, 20, 25, 30, 50, 100];
   const [pageSize, _setPageSize] = useState(pageSizes[4]);
   const [totalPages, setTotalPages] = useState(0);
-  const [rows, setRows] = useState<Wfm.Auction<string>[]>([]);
+  const [rows, setRows] = useState<WFMarketTypes.Auction<string>[]>([]);
   const { auctions } = useWarframeMarketContextContext();
-  const { rivens } = useStockContextContext();
 
   // Update Database Rows
   useEffect(() => {
     let filteredRecords = auctions;
-    let filter: Query = {};
-    if (!rivens) return;
+    let filter: ComplexFilter = {};
 
     if (query)
       filter = {
-        $or: [
-          { $combined: ["item.weapon_url_name", "item.name"], value: query },
-          { "item.name": { $contains: query } },
-          { "item.weapon_url_name": { $contains: query } },
+        OR: [
+          {
+            weapon_name_mod: {
+              combineFields: ["item.name", "item.weapon_url_name"],
+              combineWith: " ",
+              [Operator.CONTAINS_VALUE]: query,
+              isCaseSensitive: false,
+            },
+          },
         ],
       };
 
-    filteredRecords = searchProperties(filteredRecords, filter, false);
+    filteredRecords = ApplyFilter(filteredRecords, filter);
     // Update total pages
     setTotalPages(Math.ceil(filteredRecords.length / pageSize));
 
@@ -102,44 +104,44 @@ export const AuctionPanel = ({}: AuctionPanelProps) => {
       notifications.show({ title: useTranslateErrors("delete_all.title"), message: useTranslateErrors("delete_all.message"), color: "red.7" });
     },
   });
-  const createRivenFromAuctionsMutation = useMutation({
-    mutationFn: (a: Wfm.Auction<string> & { price: number }) => api.auction.import_auction(a, a.price),
-    onSuccess: async (u) => {
-      notifications.show({
-        title: useTranslateSuccess("import_riven.title"),
-        message: useTranslateSuccess("import_riven.message", { count: u }),
-        color: "green.7",
-      });
-    },
-    onError: (e) => {
-      console.error(e);
-      notifications.show({ title: useTranslateErrors("import_riven.title"), message: useTranslateErrors("import_riven.message"), color: "red.7" });
-    },
-  });
-  const OpenCreateStockRiven = (auction: Wfm.Auction<string>) => {
-    modals.openContextModal({
-      modal: "prompt",
-      title: useTranslatePrompt(`import_riven.title`),
-      innerProps: {
-        fields: [
-          {
-            name: "price",
-            label: useTranslatePrompt(`import_riven.bought.label`),
-            attributes: {
-              min: 0,
-            },
-            value: 0,
-            type: "number",
-          },
-        ],
-        onConfirm: async (data: { price: number }) => {
-          if (!auction) return;
-          createRivenFromAuctionsMutation.mutateAsync({ ...auction, price: data.price });
-        },
-        onCancel: (id: string) => modals.close(id),
-      },
-    });
-  };
+  // const createRivenFromAuctionsMutation = useMutation({
+  //   mutationFn: (a: WFMarketTypes.Auction<string> & { price: number }) => api.auction.import_auction(a, a.price),
+  //   onSuccess: async (u) => {
+  //     notifications.show({
+  //       title: useTranslateSuccess("import_riven.title"),
+  //       message: useTranslateSuccess("import_riven.message", { count: u }),
+  //       color: "green.7",
+  //     });
+  //   },
+  //   onError: (e) => {
+  //     console.error(e);
+  //     notifications.show({ title: useTranslateErrors("import_riven.title"), message: useTranslateErrors("import_riven.message"), color: "red.7" });
+  //   },
+  // });
+  // const OpenCreateStockRiven = (auction: WFMarketTypes.Auction<string>) => {
+  //   modals.openContextModal({
+  //     modal: "prompt",
+  //     title: useTranslatePrompt(`import_riven.title`),
+  //     innerProps: {
+  //       fields: [
+  //         {
+  //           name: "price",
+  //           label: useTranslatePrompt(`import_riven.bought.label`),
+  //           attributes: {
+  //             min: 0,
+  //           },
+  //           value: 0,
+  //           type: "number",
+  //         },
+  //       ],
+  //       onConfirm: async (data: { price: number }) => {
+  //         if (!auction) return;
+  //         createRivenFromAuctionsMutation.mutateAsync({ ...auction, price: data.price });
+  //       },
+  //       onCancel: (id: string) => modals.close(id),
+  //     },
+  //   });
+  // };
   return (
     <Box>
       <SearchField
@@ -191,7 +193,7 @@ export const AuctionPanel = ({}: AuctionPanelProps) => {
               auction={order}
               header={
                 <Group gap={5}>
-                  {!rivens.find((r) => r.wfm_order_id == order.id) && order.is_direct_sell ? (
+                  {/* {!rivens.find((r: any) => r.wfm_order_id == order.id) && order.is_direct_sell ? (
                     <ActionWithTooltip
                       tooltip={useTranslateButtons("import.tooltip")}
                       icon={faFileImport}
@@ -203,7 +205,7 @@ export const AuctionPanel = ({}: AuctionPanelProps) => {
                         OpenCreateStockRiven(order);
                       }}
                     />
-                  ) : null}
+                  ) : null} */}
 
                   <ActionWithTooltip
                     tooltip={useTranslateButtons("delete.tooltip")}

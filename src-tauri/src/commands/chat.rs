@@ -31,7 +31,7 @@ pub async fn chat_refresh(
             return Ok(chats);
         }
         Err(e) => {
-            error::create_log_file("command_chat_refresh.log".to_string(), &e);
+            error::create_log_file("command_chat_refresh.log", &e);
             return Err(e);
         }
     };
@@ -54,7 +54,7 @@ pub async fn chat_delete(
             );
         }
         Err(e) => {
-            error::create_log_file("command_chat_delete.log".to_string(), &e);
+            error::create_log_file("command_chat_delete.log", &e);
             return Err(e);
         }
     };
@@ -72,7 +72,7 @@ pub async fn chat_get_messages(
             return Ok(messages);
         }
         Err(e) => {
-            error::create_log_file("command_chat_get_messages.log".to_string(), &e);
+            error::create_log_file("command_chat_get_messages.log", &e);
             return Err(e);
         }
     };
@@ -136,10 +136,38 @@ pub async fn chat_delete_all(
                 );
             }
             Err(e) => {
-                error::create_log_file("command_chat_delete_all.log".to_string(), &e);
+                error::create_log_file("command_chat_delete_all.log", &e);
                 return Err(e);
             }
         }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn chat_send_message(
+    id: String,
+    msg: String,
+    wfm: tauri::State<'_, Arc<Mutex<WFMClient>>>,
+) -> Result<(), AppError> {
+    let wfm = wfm.lock()?.clone();
+    let websocket = wfm.auth().ws_client_old.clone();
+    if websocket.is_none() {
+        return Err(AppError::new(
+            "WebSocket client is not initialized",
+            eyre::eyre!("WebSocket client is not initialized, cannot send message"),
+        ));
+    }
+    let websocket = websocket.unwrap();
+    match websocket.send_request(
+        "@WS/chats/SEND_MESSAGE",
+        json!({
+            "chat_id": id,
+            "message": msg
+        }),
+    ) {
+        Ok(_) => {}
+        Err(e) => panic!("{:?}", e),
     }
     Ok(())
 }

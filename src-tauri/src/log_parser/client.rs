@@ -1,131 +1,112 @@
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{BufRead, BufReader, Seek, SeekFrom},
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex, RwLock,
-    },
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
+use regex::Regex;
+
 use crate::{
-    app::client::AppState,
-    cache::client::CacheClient,
     helper,
-    notification::client::NotifyClient,
-    qf_client::client::QFClient,
-    settings::SettingsState,
     utils::modules::{
         error::{self, AppError},
-        logger,
+        logger::{self, LoggerOptions},
+        states,
     },
-    wfm_client::client::WFMClient,
 };
 
-use super::modules::{on_conversation::OnConversationEvent, on_trading::OnTradeEvent};
+use super::modules::{
+    on_conversation::OnConversationEvent, on_mission::OnMissionEvent, on_trading::OnTradeEvent,
+};
 
 #[derive(Clone, Debug)]
 pub struct LogParser {
     log_file: PathBuf,
-    is_running: Arc<AtomicBool>,
+    previous_log_file: PathBuf,
     pub component: String,
     last_file_size: Arc<Mutex<u64>>,
-    cold_start: Arc<AtomicBool>,
     on_trade_event: Arc<RwLock<Option<OnTradeEvent>>>,
     on_conversation_event: Arc<RwLock<Option<OnConversationEvent>>>,
-    pub settings: Arc<Mutex<SettingsState>>,
-    pub wfm: Arc<Mutex<WFMClient>>,
-    pub cache: Arc<Mutex<CacheClient>>,
-    pub notify: Arc<Mutex<NotifyClient>>,
-    pub app: Arc<Mutex<AppState>>,
-    pub qf: Arc<Mutex<QFClient>>,
+    on_mission_event: Arc<RwLock<Option<OnMissionEvent>>>,
+    cache_line: Arc<Mutex<Vec<String>>>,
+    last_read_date: Arc<Mutex<String>>,
+    last_line: Arc<Mutex<String>>,
 }
 
 impl LogParser {
-    pub fn new(
-        app: Arc<Mutex<AppState>>,
-        settings: Arc<Mutex<SettingsState>>,
-        wfm: Arc<Mutex<WFMClient>>,
-        cache: Arc<Mutex<CacheClient>>,
-        notify: Arc<Mutex<NotifyClient>>,
-        qf: Arc<Mutex<QFClient>>,
-    ) -> Self {
+    pub fn new() -> Self {
         LogParser {
-            app,
-            settings,
-            wfm,
-            cache,
-            notify,
-            qf,
             log_file: helper::get_local_data_path()
                 .join("Warframe")
                 .join("EE.log"),
-            is_running: Arc::new(AtomicBool::new(false)),
+            previous_log_file: PathBuf::new(),
             component: "LogParser".to_string(),
             last_file_size: Arc::new(Mutex::new(0)),
-            cold_start: Arc::new(AtomicBool::new(true)),
             on_trade_event: Arc::new(RwLock::new(None)),
             on_conversation_event: Arc::new(RwLock::new(None)),
+            on_mission_event: Arc::new(RwLock::new(None)),
+            cache_line: Arc::new(Mutex::new(Vec::new())),
+            last_read_date: Arc::new(Mutex::new("".to_string())),
+            last_line: Arc::new(Mutex::new("".to_string())),
         }
     }
-    // pub fn stop_loop(&self) {
-    //     self.is_running.store(false, Ordering::SeqCst);
-    // }
-
-    // pub fn is_running(&self) -> bool {
-    //     self.is_running.load(Ordering::SeqCst)
-    // }
-    pub fn start_loop(self) -> Result<(), AppError> {
-        // Return if it's already running
-        if self.is_running.load(Ordering::SeqCst) {
-            logger::info_con(&self.component, "Log parser is already running");
-            return Ok(());
-        }
-
-        self.is_running.store(true, Ordering::SeqCst);
-        let is_running = Arc::clone(&self.is_running);
-
-        let forced_stop = Arc::clone(&self.is_running);
-        let scraper = self.clone();
-        logger::info_con(&scraper.component, "Starting the log parser");
+    pub fn init(&self) -> Result<(), AppError> {
+        let mut scraper = self.clone();
+        logger::info(
+            &scraper.component,
+            "Starting the log parser",
+            LoggerOptions::default(),
+        );
         tauri::async_runtime::spawn(async move {
-            while is_running.load(Ordering::SeqCst) && forced_stop.load(Ordering::SeqCst) {
-                match scraper.check_for_new_logs(self.cold_start.load(Ordering::SeqCst)) {
+            loop {
+                match scraper.check_for_new_logs() {
                     Ok(_) => (),
                     Err(e) => {
                         if e.cause().to_string().contains("Log file does not exist") {
-                            logger::warning_con(
+                            logger::info(
                                 &scraper.component,
                                 &format!("{} wil try again in 10 seconds", e.cause()),
+                                LoggerOptions::default(),
                             );
                             // Wait 10 seconds before trying again
                             tokio::time::sleep(Duration::from_secs(10)).await;
-                            logger::info_con(
+                            logger::info(
                                 &scraper.component,
                                 "Trying to start the log parser again",
+                                LoggerOptions::default(),
                             );
                         } else {
-                            error::create_log_file("log_parser.logs".to_string(), &e);
+                            error::create_log_file("log_parser.logs", &e);
                         }
                     }
                 }
-                scraper.cold_start.store(false, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
-            logger::info_con(&scraper.component, "Log parser stopped");
         });
         Ok(())
     }
-    pub fn check_for_new_logs(&self, is_starting: bool) -> Result<(), AppError> {
-        if !self.log_file.exists() {
+    pub fn check_for_new_logs(&mut self) -> Result<(), AppError> {
+        let settings = states::settings().unwrap().clone();
+
+        let log_file =
+            if !settings.wf_log_path.is_empty() && PathBuf::from(&settings.wf_log_path).exists() {
+                PathBuf::from(&settings.wf_log_path)
+            } else {
+                self.log_file.clone()
+            };
+
+        //Validate log file
+        if !log_file.exists() {
             return Err(AppError::new(
                 &self.component,
-                eyre::eyre!("Log file does not exist: {:?}", self.log_file),
+                eyre::eyre!("Log file does not exist: {:?}", log_file),
             ));
         }
 
-        let mut file = File::open(&self.log_file).map_err(|e| {
+        // Read the log file and process the lines
+        let mut file = File::open(&log_file).map_err(|e| {
             AppError::new(
                 &self.component,
                 eyre::eyre!("Error opening log file: {}", e),
@@ -140,9 +121,14 @@ impl LogParser {
         })?;
         let current_file_size = metadata.len();
 
-        if is_starting {
+        if log_file != self.previous_log_file {
+            logger::info(
+                &self.component,
+                "Log file changed",
+                LoggerOptions::default(),
+            );
             *self.last_file_size.lock().unwrap() = current_file_size;
-            return Ok(());
+            self.previous_log_file = log_file.clone();
         }
 
         let mut last_file_size = self.last_file_size.lock().unwrap();
@@ -161,50 +147,53 @@ impl LogParser {
 
         let reader = BufReader::new(file);
 
-        for (_, line) in reader.lines().enumerate() {
+        let mut ignore_combined = false;
+        for line in reader.lines() {
+            *self.last_read_date.lock().unwrap() =
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             if let Ok(line) = line {
-                if self.trade_event().process_line(&line, *last_file_size)? {
-                    continue;
+                let mut last_line = self.last_line.lock().unwrap();
+                self.cache_line.lock().unwrap().push(line.clone());
+                match self
+                    .trade_event()
+                    .process_line(&line, &last_line.clone(), ignore_combined)
+                {
+                    Ok(msg) => {
+                        ignore_combined = msg.clone();
+                        if ignore_combined {
+                            *last_line = line.clone();
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        error::create_log_file("log_parser_trade_event.logs", &e);
+                    }
                 }
                 if self
                     .conversation_event()
                     .process_line(&line, *last_file_size)?
                 {
+                    *last_line = line.clone();
                     continue;
                 }
+                if self.mission_event().process_line(&line, *last_file_size)? {
+                    *last_line = line.clone();
+                    continue;
+                }
+                *last_line = line.clone();
             }
         }
 
         *last_file_size = current_file_size;
         Ok(())
     }
-
-    pub fn get_logs_between(&self, start: u64, _end: u64) -> Result<Vec<String>, AppError> {
-        let mut file = File::open(&self.log_file).map_err(|e| {
-            AppError::new(
-                &self.component,
-                eyre::eyre!("Error opening log file: {}", e),
-            )
-        })?;
-
-        let mut logs = Vec::new();
-
-        file.seek(SeekFrom::Start(start)).map_err(|e| {
-            AppError::new(
-                &self.component,
-                eyre::eyre!("Error seeking log file: {}", e),
-            )
-        })?;
-
-        let reader = BufReader::new(file);
-
-        for (_, line) in reader.lines().enumerate() {
-            if let Ok(line) = line {
-                logs.push(line);
-            }
+    pub fn is_start_of_log(&self, log: &str) -> bool {
+        let re = Regex::new(r"\b(\d+\.\d+)\b").unwrap();
+        if let Some(_) = re.captures(log) {
+            return true;
+        } else {
+            return false;
         }
-
-        Ok(logs)
     }
 
     pub fn trade_event(&self) -> OnTradeEvent {
@@ -239,5 +228,41 @@ impl LogParser {
             .as_ref()
             .unwrap()
             .clone()
+    }
+    pub fn update_mission_event(&self, module: OnMissionEvent) {
+        // Update the stored ItemModule
+        *self.on_mission_event.write().unwrap() = Some(module);
+    }
+    pub fn mission_event(&self) -> OnMissionEvent {
+        // Lazily initialize ItemModule if not already initialized
+        if self.on_mission_event.read().unwrap().is_none() {
+            *self.on_mission_event.write().unwrap() =
+                Some(OnMissionEvent::new(self.clone()).clone());
+        }
+
+        // Unwrapping is safe here because we ensured the on_conversation_event is initialized
+        self.on_mission_event
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone()
+    }
+    pub fn get_cache_lines(&self) -> Vec<String> {
+        let cache = self.cache_line.lock().unwrap().clone();
+        cache
+    }
+    pub fn clear_cache(&self) {
+        *self.cache_line.lock().unwrap() = Vec::new();
+    }
+    pub fn get_last_read_date(&self) -> String {
+        self.last_read_date.lock().unwrap().clone()
+    }
+    pub fn dump_cache(&self) -> String {
+        let cache = self.cache_line.lock().unwrap().clone();
+        let mut path = helper::get_desktop_path();
+        path.push("ee.log");
+        fs::write(path.clone(), cache.join("\n")).unwrap();
+        path.to_str().unwrap().to_string()
     }
 }

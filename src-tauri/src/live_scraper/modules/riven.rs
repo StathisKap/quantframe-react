@@ -6,8 +6,10 @@ use entity::{enums::stock_status::StockStatus, price_history::PriceHistory};
 use serde_json::json;
 use service::{StockRivenMutation, StockRivenQuery};
 
-use crate::helper;
+use crate::utils::modules::logger::LoggerOptions;
+use crate::utils::modules::states;
 use crate::wfm_client::types::auction::Auction;
+use crate::{helper, DATABASE};
 use crate::{
     live_scraper::{client::LiveScraperClient, types::riven_extra_info::AuctionDetails},
     logger,
@@ -43,32 +45,34 @@ impl RivenModule {
         self.client
             .send_gui_update(format!("riven.{}", i18n_key).as_str(), values);
     }
-    pub fn send_stock_update(&self, operation: UIOperationEvent, value: serde_json::Value) {
-        let notify = self.client.notify.lock().unwrap().clone();
-        notify
-            .gui()
-            .send_event_update(UIEvent::UpdateStockRivens, operation, Some(value));
+    pub fn send_stock_update(&self) {
+        let notify = states::notify_client().unwrap();
+        notify.gui().send_event(UIEvent::RefreshStockRivens, None);
     }
     pub fn send_auction_update(&self, operation: UIOperationEvent, value: serde_json::Value) {
-        let notify = self.client.notify.lock().unwrap().clone();
+        let notify = states::notify_client().unwrap();
         notify
             .gui()
             .send_event_update(UIEvent::UpdateAuction, operation, Some(value));
     }
     pub async fn check_stock(&mut self) -> Result<(), AppError> {
-        let app = self.client.app.lock()?.clone();
-        let wfm = self.client.wfm.lock()?.clone();
-        let auth = self.client.auth.lock()?.clone();
-        let settings = self.client.settings.lock()?.clone().live_scraper;
+        let conn = DATABASE.get().unwrap();
+        let wfm = states::wfm_client()?;
+        let auth = states::auth()?;
+        let settings = states::settings()?.live_scraper;
         let min_profit = settings.stock_riven.min_profit;
         let threshold_percentage = settings.stock_riven.threshold_percentage / 100.0;
         let limit_to = settings.stock_riven.limit_to;
-        logger::info_con(&self.get_component("CheckStock"), "Run Riven Stock Check");
+        logger::info(
+            &self.get_component("CheckStock"),
+            "Run Riven Stock Check",
+            LoggerOptions::default(),
+        );
 
         // Send GUI Update.
         self.send_msg("stating", None);
 
-        let stocks = StockRivenQuery::get_all(&app.conn)
+        let stocks = StockRivenQuery::get_all(conn)
             .await
             .map_err(|e| AppError::new("RivenModule", eyre::eyre!(e)))?;
 
@@ -120,14 +124,10 @@ impl RivenModule {
                 }
                 self.send_msg("riven_hidden", Some(json!({ "weapon_name": stock_riven.weapon_name.clone(), "mod_name": stock_riven.mod_name.clone()})));
                 if stock_riven.is_dirty {
-                    StockRivenMutation::update_by_id(
-                        &app.conn,
-                        stock_riven.id,
-                        stock_riven.clone(),
-                    )
-                    .await
-                    .map_err(|e| AppError::new(&self.component, eyre::eyre!(e)))?;
-                    self.send_stock_update(UIOperationEvent::CreateOrUpdate, json!(stock_riven));
+                    StockRivenMutation::update_by_id(conn, stock_riven.id, stock_riven.clone())
+                        .await
+                        .map_err(|e| AppError::new(&self.component, eyre::eyre!(e)))?;
+                    self.send_stock_update();
                 }
                 continue;
             }
@@ -144,7 +144,11 @@ impl RivenModule {
                 min_mastery_rank,
                 max_mastery_rank,
                 polarity,
-            ) = match_data.get_auction_search_query();
+            ) = if stock_riven.filter.enabled.unwrap_or(false) {
+                match_data.get_auction_search_query()
+            } else {
+                (None, None, None, None, None, None, None)
+            };
 
             let mut live_auctions = wfm
                 .auction()
@@ -166,9 +170,40 @@ impl RivenModule {
             // Filter the auctions.
             live_auctions = live_auctions.remove_offline_auctions();
             live_auctions = live_auctions.filter_by_username(auth.ingame_name.as_str(), true);
-            live_auctions =
-                live_auctions.calculate__riven_similarity(stock_riven.attributes.0.clone());
             live_auctions.sort_by_platinum();
+
+            let sim_threshold = stock_riven.filter.similarity.unwrap_or(0.0);
+            if stock_riven.filter.enabled.unwrap_or(false) {
+                live_auctions =
+                    live_auctions.calculate__riven_similarity(stock_riven.attributes.0.clone());
+                // Filter auctions by similarity threshold
+                let total_before = live_auctions.auctions.len();
+                let mut filtered_auctions: Vec<_> = live_auctions
+                    .auctions
+                    .iter()
+                    .filter(|a| a.item.similarity.unwrap_or(0.0) >= sim_threshold)
+                    .cloned()
+                    .collect();
+                logger::info(
+                    &self.get_component("SimilarityFilter"),
+                    &format!(
+                        "Filtered {} of {} auctions",
+                        total_before - filtered_auctions.len(),
+                        total_before
+                    ),
+                    LoggerOptions::default(),
+                );
+
+                // Sort by price ascending after filtering
+                filtered_auctions.sort_by(|a, b| {
+                    a.buyout_price
+                        .unwrap_or(i64::MAX)
+                        .cmp(&b.buyout_price.unwrap_or(i64::MAX))
+                });
+
+                // Reassign to live_auctions with only the filtered list
+                live_auctions.auctions = filtered_auctions;
+            };
 
             // Get the price the item was bought for.
             let bought_price = stock_riven.bought;
@@ -332,7 +367,7 @@ impl RivenModule {
                         .into_iter()
                         .collect(),
                 );
-                StockRivenMutation::update_by_id(&app.conn, stock_riven.id, stock_riven.clone())
+                StockRivenMutation::update_by_id(conn, stock_riven.id, stock_riven.clone())
                     .await
                     .map_err(|e| AppError::new(&self.component, eyre::eyre!(e)))?;
                 let mut payload = json!(stock_riven);
@@ -346,7 +381,7 @@ impl RivenModule {
                         .insert(stock_riven.id.clone(), user_auction.info.clone());
                 }
                 self.update_state();
-                self.send_stock_update(UIOperationEvent::CreateOrUpdate, json!(payload));
+                self.send_stock_update();
             }
         }
         Ok(())

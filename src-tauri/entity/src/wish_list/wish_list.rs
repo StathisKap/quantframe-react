@@ -4,7 +4,9 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    enums::stock_status::StockStatus, price_history::PriceHistoryVec, sub_type::SubType,
+    enums::stock_status::StockStatus,
+    price_history::{PriceHistory, PriceHistoryVec},
+    sub_type::SubType,
     transaction,
 };
 
@@ -32,7 +34,7 @@ pub struct Model {
     pub updated_at: DateTimeUtc,
     #[sea_orm(created_at)]
     pub created_at: DateTimeUtc,
-
+    pub is_hidden: bool,
     #[sea_orm(ignore)]
     #[serde(rename = "is_dirty", default)]
     pub is_dirty: bool,
@@ -78,6 +80,7 @@ impl Model {
             created_at: Default::default(),
             is_dirty: true,
             locked: false,
+            is_hidden: false,
             changes: None,
         }
     }
@@ -128,6 +131,30 @@ impl Model {
         }
         if Self::set_if_changed(&mut self.status, status, &mut self.is_dirty) {
             self.changes = Some("status".to_string());
+        }
+    }
+    pub fn uuid(&self) -> String {
+        let mut uuid = self.wfm_url.clone();
+        if let Some(sub_type) = self.sub_type.clone() {
+            uuid.push_str(&format!("-{}", sub_type.shot_display()));
+        }
+        uuid
+    }
+    pub fn add_price_history(&mut self, price_history: PriceHistory) {
+        let mut items = self.price_history.0.clone();
+
+        if items
+            .last()
+            .map_or(true, |last| last.price != price_history.price)
+        {
+            // Limit to 5 elements
+            if items.len() >= 5 {
+                items.remove(0);
+            }
+            items.push(price_history);
+            self.is_dirty = true;
+            self.changes = Some("price_history".to_string());
+            self.price_history = PriceHistoryVec(items);
         }
     }
 }

@@ -1,12 +1,13 @@
 import { Group, TextInput, Grid, Title, Tabs, Center, ScrollArea, Button } from "@mantine/core";
-import { StockRiven } from "@api/types";
+import { TauriTypes } from "$types";
 import { useTranslateComponent, useTranslateEnums } from "@hooks/useTranslate.hook";
 import dayjs from "dayjs";
 import { PriceHistoryListItem } from "@components/PriceHistory";
 import { AuctionListItem } from "@components/AuctionListItem";
+import { open } from "@tauri-apps/plugin-shell";
 
 export type StockRivenInfoProps = {
-  value: StockRiven;
+  value: TauriTypes.StockRiven;
 };
 export function StockRivenInfo({ value }: StockRivenInfoProps) {
   // Translate general
@@ -21,7 +22,7 @@ export function StockRivenInfo({ value }: StockRivenInfoProps) {
   const useTranslateButtons = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
     useTranslateStockRivenInfo(`buttons.${key}`, { ...context }, i18Key);
 
-  const generateAuctionLink = (auction: StockRiven, withAttributes: boolean = false) => {
+  const generateAuctionLink = (auction: TauriTypes.StockRiven, withAttributes: boolean = false) => {
     const baseUrl = "https://warframe.market/auctions/search?type=riven&polarity=any&sort_by=price_asc";
     const params: string[] = [];
 
@@ -39,7 +40,7 @@ export function StockRivenInfo({ value }: StockRivenInfoProps) {
       .join(",");
     if (negativeStats != "" && withAttributes) params.push(`negative_stats=${negativeStats}`);
 
-    window.open(`${baseUrl}&${params.join("&")}`, "_blank");
+    open(`${baseUrl}&${params.join("&")}`);
   };
 
   return (

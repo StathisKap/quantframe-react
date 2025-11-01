@@ -1,22 +1,19 @@
-use std::sync::{Arc, Mutex};
-
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer};
 
-use crate::{
-    settings::SettingsState,
-    utils::modules::{error::AppError, logger},
+use crate::utils::modules::{
+    error::AppError,
+    logger::{self, LoggerOptions},
+    states,
 };
 
-use super::modules::{
-    stock::{add_item, add_riven},
-};
+use super::modules::stock::{add_item, add_riven};
 #[derive(Clone, Debug)]
 pub struct HttpClient {}
 
 impl HttpClient {
-    pub fn setup(settings: Arc<Mutex<SettingsState>>) -> Result<Self, AppError> {
-        let settings = settings.lock().unwrap();
+    pub fn setup() -> Result<Self, AppError> {
+        let settings = states::settings()?;
         tauri::async_runtime::spawn(
             HttpServer::new(|| {
                 App::new()
@@ -33,13 +30,14 @@ impl HttpClient {
             .map_err(|e| AppError::new("HttpServer", eyre::eyre!(e)))?
             .run(),
         );
-        logger::info_con(
+        logger::info(
             "HttpServer",
             format!(
                 "HTTP Server started on {}:{}",
                 settings.http.host, settings.http.port
             )
             .as_str(),
+            LoggerOptions::default(),
         );
         return Ok(HttpClient {});
     }

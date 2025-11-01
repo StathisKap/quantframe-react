@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
@@ -9,10 +9,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    app::client::AppState,
-    auth::AuthState,
     logger,
-    notification::client::NotifyClient,
     utils::{
         enums::{
             log_level::LogLevel,
@@ -20,14 +17,16 @@ use crate::{
         },
         modules::{
             error::{ApiResult, AppError, ErrorApiResponse},
+            logger::LoggerOptions,
             rate_limiter::RateLimiter,
+            states,
         },
     },
 };
 
 use super::modules::{
     alert::AlertModule, analytics::AnalyticsModule, auth::AuthModule, cache::CacheModule,
-    price_scraper::PriceScraperModule, transaction::TransactionModule,
+    item::ItemModule,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -44,45 +43,30 @@ pub struct QFClient {
     limiter: Arc<tokio::sync::Mutex<RateLimiter>>,
     auth_module: Arc<RwLock<Option<AuthModule>>>,
     cache_module: Arc<RwLock<Option<CacheModule>>>,
-    price_module: Arc<RwLock<Option<PriceScraperModule>>>,
+    item_module: Arc<RwLock<Option<ItemModule>>>,
     analytics_module: Arc<RwLock<Option<AnalyticsModule>>>,
     alert_module: Arc<RwLock<Option<AlertModule>>>,
-    transaction_module: Arc<RwLock<Option<TransactionModule>>>,
     pub component: String,
-    pub log_file: String,
-    pub auth: Arc<Mutex<AuthState>>,
-    pub settings: Arc<Mutex<crate::settings::SettingsState>>,
-    pub app: Arc<Mutex<AppState>>,
-    pub notify: Arc<Mutex<NotifyClient>>,
+    pub log_file: &'static str,
 }
 
 impl QFClient {
-    pub fn new(
-        auth: Arc<Mutex<AuthState>>,
-        settings: Arc<Mutex<crate::settings::SettingsState>>,
-        app: Arc<Mutex<AppState>>,
-        notify: Arc<Mutex<NotifyClient>>,
-    ) -> Self {
+    pub fn new() -> Self {
         QFClient {
             endpoint: "https://api.quantframe.app/".to_string(),
             endpoint_dev: "http://localhost:6969/".to_string(),
-            is_dev: if cfg!(debug_assertions) { true } else { false },
+            is_dev: false, // Always use production endpoint
             limiter: Arc::new(tokio::sync::Mutex::new(RateLimiter::new(
                 3.0,
                 Duration::new(1, 0),
             ))),
             auth_module: Arc::new(RwLock::new(None)),
             cache_module: Arc::new(RwLock::new(None)),
-            price_module: Arc::new(RwLock::new(None)),
+            item_module: Arc::new(RwLock::new(None)),
             alert_module: Arc::new(RwLock::new(None)),
             analytics_module: Arc::new(RwLock::new(None)),
-            transaction_module: Arc::new(RwLock::new(None)),
-            log_file: "qfAPIaCalls.log".to_string(),
+            log_file: "qfAPIaCalls.log",
             component: "QuantframeApi".to_string(),
-            auth,
-            settings,
-            app,
-            notify,
         }
     }
     pub fn create_api_error(
@@ -100,7 +84,7 @@ impl QFClient {
         );
     }
     pub fn debug(&self, id: &str, component: &str, msg: &str, file: Option<bool>) {
-        let settings = self.settings.lock().unwrap().clone();
+        let settings = states::settings().expect("Settings not initialized");
         if !settings.debug.contains(&"*".to_owned()) && !settings.debug.contains(&id.to_owned()) {
             return;
         }
@@ -109,21 +93,19 @@ impl QFClient {
             logger::debug(
                 format!("{}:{}", self.component, component).as_str(),
                 msg,
-                true,
-                None,
+                LoggerOptions::default(),
             );
             return;
         }
         logger::debug(
             format!("{}:{}", self.component, component).as_str(),
             msg,
-            true,
-            Some(&self.log_file),
+            LoggerOptions::default().set_file(self.log_file),
         );
     }
     fn handle_error(&self, errors: Vec<String>, data: Value) {
-        let mut auth = self.auth.lock().unwrap();
-        let notify = self.notify.lock().unwrap();
+        let mut auth = states::auth().expect("Auth not initialized");
+        let notify = states::notify_client().expect("NotifyClient not initialized");
         if errors.contains(&"Unauthorized".to_string()) {
             auth.reset();
             notify.gui().send_event_update(
@@ -158,8 +140,8 @@ impl QFClient {
         is_bytes: bool,
         is_string: bool,
     ) -> Result<ApiResult<T>, AppError> {
-        let app = self.app.lock()?.clone();
-        let auth = self.auth.lock()?.clone();
+        let app = states::app_state()?;
+        let auth = states::auth()?;
 
         let mut rate_limiter = self.limiter.lock().await;
         rate_limiter.wait_for_token().await;
@@ -173,6 +155,7 @@ impl QFClient {
             self.endpoint.clone()
         };
         let new_url = format!("{}{}", base_url, url);
+        let platform = tauri_plugin_os::platform();
         let request = client
             .request(method.clone(), Url::parse(&new_url).unwrap())
             .header(
@@ -183,12 +166,14 @@ impl QFClient {
                 ),
             )
             .header("AppId", app.app_id.to_string())
+            .header("Platform", platform)
+            .header("Device", auth.get_device_id())
             .header("IsDevelopment", app.is_development.to_string())
             .header("App", packageinfo.name.to_string())
-            .header("Device", auth.get_device_id())
             .header("Version", packageinfo.version.to_string())
-            .header("UserName", auth.ingame_name)
-            .header("UserId", auth.id);
+            .header("WFMPlatform", auth.platform)
+            .header("WFMUsername", auth.ingame_name)
+            .header("WFMId", auth.id);
 
         let request = match body.clone() {
             Some(content) => request.json(&content),
@@ -257,7 +242,22 @@ impl QFClient {
             self.handle_error(error_def.messages.clone(), response);
             return Ok(ApiResult::Error(error_def, headers));
         }
-        if response.get("error").is_some() || error_def.status_code == 401 {
+
+        match error_def.status_code {
+            429 => {
+                error_def.error = "RateLimit".to_string();
+                error_def.messages.push("RateLimit".to_string());
+                error_def
+                    .messages
+                    .push("You have hit the rate limit.".to_string());
+            }
+            _ => {}
+        }
+
+        if response.get("error").is_some()
+            || error_def.status_code == 401
+            || error_def.status_code == 429
+        {
             error_def.error = "ApiError".to_string();
 
             let error = if response.get("error").is_some() {
@@ -346,20 +346,6 @@ impl QFClient {
             .await?)
     }
 
-    pub async fn delete<T: DeserializeOwned>(&self, url: &str) -> Result<ApiResult<T>, AppError> {
-        Ok(self
-            .send_request(Method::DELETE, url, None, false, false)
-            .await?)
-    }
-    pub async fn put<T: DeserializeOwned>(
-        &self,
-        url: &str,
-        body: Option<Value>,
-    ) -> Result<ApiResult<T>, AppError> {
-        Ok(self
-            .send_request(Method::PUT, url, body, false, false)
-            .await?)
-    }
     pub fn cache(&self) -> CacheModule {
         // Lazily initialize ItemModule if not already initialized
         if self.cache_module.read().unwrap().is_none() {
@@ -370,23 +356,22 @@ impl QFClient {
         self.cache_module.read().unwrap().as_ref().unwrap().clone()
     }
 
-    pub fn price(&self) -> PriceScraperModule {
-        // Lazily initialize PriceScraperModule if not already initialized
-        if self.price_module.read().unwrap().is_none() {
-            *self.price_module.write().unwrap() =
-                Some(PriceScraperModule::new(self.clone()).clone());
+    pub fn item(&self) -> ItemModule {
+        // Lazily initialize ItemModule if not already initialized
+        if self.item_module.read().unwrap().is_none() {
+            *self.item_module.write().unwrap() = Some(ItemModule::new(self.clone()).clone());
         }
 
-        // Unwrapping is safe here because we ensured the price_module is initialized
-        self.price_module.read().unwrap().as_ref().unwrap().clone()
+        // Unwrapping is safe here because we ensured the item_module is initialized
+        self.item_module.read().unwrap().as_ref().unwrap().clone()
     }
     pub fn auth(&self) -> AuthModule {
-        // Lazily initialize PriceScraperModule if not already initialized
+        // Lazily initialize AuthModule if not already initialized
         if self.auth_module.read().unwrap().is_none() {
             *self.auth_module.write().unwrap() = Some(AuthModule::new(self.clone()).clone());
         }
 
-        // Unwrapping is safe here because we ensured the price_module is initialized
+        // Unwrapping is safe here because we ensured the item_module is initialized
         self.auth_module.read().unwrap().as_ref().unwrap().clone()
     }
 
@@ -422,20 +407,5 @@ impl QFClient {
     pub fn update_alert_module(&self, module: AlertModule) {
         // Update the stored AnalyticsModule
         *self.alert_module.write().unwrap() = Some(module);
-    }
-    pub fn transaction(&self) -> TransactionModule {
-        // Lazily initialize TransactionModule if not already initialized
-        if self.transaction_module.read().unwrap().is_none() {
-            *self.transaction_module.write().unwrap() =
-                Some(TransactionModule::new(self.clone()).clone());
-        }
-
-        // Unwrapping is safe here because we ensured the transaction_module is initialized
-        self.transaction_module
-            .read()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .clone()
     }
 }

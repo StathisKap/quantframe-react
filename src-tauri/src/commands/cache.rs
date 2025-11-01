@@ -4,9 +4,13 @@ use crate::{
     cache::{
         client::CacheClient,
         types::{
-            cache_relics::CacheRelics, cache_riven::{CacheRivenWFMAttribute, CacheRivenWeapon}, cache_tradable_item::CacheTradableItem
+            cache_relics::CacheRelics,
+            cache_riven::{CacheRivenWFMAttribute, CacheRivenWeapon},
+            cache_tradable_item::CacheTradableItem,
         },
-    }, qf_client::client::QFClient, utils::modules::error::{self, AppError}
+    },
+    qf_client::client::QFClient,
+    utils::modules::error::{self, AppError},
 };
 
 #[tauri::command]
@@ -18,11 +22,10 @@ pub async fn cache_reload(
     let qf = qf.lock()?.clone();
     match cache.load().await {
         Ok(_) => {
-            qf.analytics()
-                .add_metric("Cache_Reload", "manual");
+            qf.analytics().add_metric("Cache_Reload", "manual");
         }
         Err(e) => {
-            error::create_log_file("cache.log".to_string(), &e);
+            error::create_log_file("cache.log", &e);
             return Err(e);
         }
     }
@@ -39,7 +42,7 @@ pub async fn cache_get_tradable_items(
             return Ok(items);
         }
         Err(e) => {
-            error::create_log_file("cache_get_tradable_items.log".to_string(), &e);
+            error::create_log_file("cache_get_tradable_items.log", &e);
             return Err(e);
         }
     }
@@ -55,7 +58,7 @@ pub async fn cache_get_riven_weapons(
             return Ok(items);
         }
         Err(e) => {
-            error::create_log_file("cache_get_riven_weapons.log".to_string(), &e);
+            error::create_log_file("cache_get_riven_weapons.log", &e);
             return Err(e);
         }
     }
@@ -71,7 +74,7 @@ pub async fn cache_get_riven_attributes(
             return Ok(items);
         }
         Err(e) => {
-            error::create_log_file("cache_get_riven_attributes.log".to_string(), &e);
+            error::create_log_file("cache_get_riven_attributes.log", &e);
             return Err(e);
         }
     }

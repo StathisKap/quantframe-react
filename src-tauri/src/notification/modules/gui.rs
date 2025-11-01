@@ -1,12 +1,13 @@
 use serde_json::{json, Value};
-use tauri::Manager;
+use tauri::Emitter;
 
 use crate::{
     notification::client::NotifyClient,
     utils::{
         enums::ui_events::{UIEvent, UIOperationEvent},
-        modules::logger,
+        modules::logger::{self, LoggerOptions},
     },
+    APP,
 };
 
 #[derive(Clone, Debug)]
@@ -27,18 +28,20 @@ impl GUIModule {
     }
 
     pub fn send_event(&self, event: UIEvent, data: Option<Value>) {
-        let window = self.client.app_handler.get_window("main").unwrap().clone();
-        match window.emit("message", json!({ "event": event.as_str(), "data":  data })) {
+        let app = APP.get().expect("App not initialized");
+        match app.emit("message", json!({ "event": event.as_str(), "data":  data })) {
             Ok(_) => {
-                logger::info_con(
+                logger::info(
                     &self.get_component("SendEvent"),
                     format!("Event: {}", event.as_str()).as_str(),
+                    LoggerOptions::default(),
                 );
             }
             Err(e) => {
-                logger::error_con(
+                logger::error(
                     &self.get_component("SendEvent"),
                     format!("Event: {}", e).as_str(),
+                    LoggerOptions::default(),
                 );
             }
         }
@@ -49,21 +52,23 @@ impl GUIModule {
         operation: UIOperationEvent,
         data: Option<Value>,
     ) {
-        let window = self.client.app_handler.get_window("main").unwrap().clone();
-        match window.emit(
+        let app = APP.get().expect("App not initialized");
+        match app.emit(
             "message_update",
             json!({ "event": event.as_str(), "operation":operation.as_str(), "data":  data }),
         ) {
             Ok(_) => {
-                logger::info_con(
+                logger::info(
                     &self.get_component("SendEventUpdate"),
                     format!("Event: {}", event.as_str()).as_str(),
+                    LoggerOptions::default(),
                 );
             }
             Err(e) => {
-                logger::error_con(
+                logger::error(
                     &self.get_component("SendEventUpdate"),
                     format!("Event: {}", e).as_str(),
+                    LoggerOptions::default(),
                 );
             }
         }

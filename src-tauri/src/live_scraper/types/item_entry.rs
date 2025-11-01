@@ -1,9 +1,7 @@
 use std::hash::{Hash, Hasher};
 
-use entity::{stock::item::stock_item, sub_type::SubType};
+use entity::sub_type::SubType;
 use serde::{Deserialize, Serialize};
-
-use crate::cache::types::item_price_info::ItemPriceInfo;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemEntry {
@@ -14,6 +12,9 @@ pub struct ItemEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "wish_list_id")]
     pub wish_list_id: Option<i64>,
+
+    #[serde(rename = "wfm_id")]
+    pub wfm_id: String,
 
     #[serde(rename = "wfm_url")]
     pub wfm_url: String,
@@ -56,6 +57,7 @@ impl ItemEntry {
         stock_id: Option<i64>,
         wish_list_id: Option<i64>,
         wfm_url: String,
+        wfm_id: String,
         sub_type: Option<SubType>,
         priority: i64,
         buy_quantity: i64,
@@ -67,6 +69,7 @@ impl ItemEntry {
             stock_id,
             wish_list_id,
             wfm_url,
+            wfm_id,
             sub_type,
             priority,
             buy_quantity,
@@ -74,5 +77,12 @@ impl ItemEntry {
             operation,
             order_type: order_type.to_string(),
         }
+    }
+    pub fn uuid(&self) -> String {
+        let mut uuid = self.wfm_url.clone();
+        if let Some(sub_type) = self.sub_type.clone() {
+            uuid.push_str(&format!("-{}", sub_type.shot_display()));
+        }
+        uuid
     }
 }

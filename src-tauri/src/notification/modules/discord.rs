@@ -1,6 +1,12 @@
 use serde_json::json;
 
-use crate::{notification::client::NotifyClient, utils::modules::logger};
+use crate::{
+    notification::client::NotifyClient,
+    utils::modules::{
+        logger::{self, LoggerOptions},
+        states,
+    },
+};
 
 #[derive(Clone, Debug)]
 pub struct DiscordModule {
@@ -38,7 +44,7 @@ impl DiscordModule {
     }
 
     fn get_embed_footer(&self) -> serde_json::Value {
-        let app = self.client.app.lock().unwrap().clone();
+        let app = states::app_state().unwrap();
         let packageinfo = app.get_app_info();
 
         // Create a new Discord notification JSON object
@@ -96,10 +102,18 @@ impl DiscordModule {
             let res = client.post(webhook).json(&body).send().await;
             match res {
                 Ok(_) => {
-                    logger::info_con("Helper", "Message sent to discord");
+                    logger::info(
+                        "Helper",
+                        "Message sent to discord",
+                        LoggerOptions::default(),
+                    );
                 }
                 Err(e) => {
-                    logger::error_con(&component, &format!("Error: {:?}", e));
+                    logger::error(
+                        &component,
+                        &format!("Error: {:?}", e),
+                        LoggerOptions::default(),
+                    );
                 }
             }
         });
@@ -131,10 +145,18 @@ impl DiscordModule {
             let res = client.post(webhook).json(&body).send().await;
             match res {
                 Ok(_) => {
-                    logger::info_con("Helper", "Message sent to discord");
+                    logger::info(
+                        "Helper",
+                        "Message sent to discord",
+                        LoggerOptions::default(),
+                    );
                 }
                 Err(e) => {
-                    logger::error_con(&component, &format!("Error: {:?}", e));
+                    logger::info(
+                        &component,
+                        &format!("Error: {:?}", e),
+                        LoggerOptions::default(),
+                    );
                 }
             }
         });

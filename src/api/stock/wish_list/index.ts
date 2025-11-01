@@ -1,33 +1,40 @@
 import { TauriClient } from "../..";
-import { CreateWishListItem, BoughtWishListItem, WishListItem, UpdateWishListItem } from "@api/types";
+import { TauriTypes } from "$types";
 
 export class WishListModule {
   constructor(private readonly client: TauriClient) {}
-
-  async reload(): Promise<void> {
-    const [] = await this.client.sendInvoke<void>("wish_list_reload");
+  async getOverview(): Promise<TauriTypes.StockEntryOverview[]> {
+    const [err, stockItems] = await this.client.sendInvoke<TauriTypes.StockEntryOverview[]>("get_wish_list_overview");
+    if (err) throw err;
+    return stockItems;
   }
-
-  async create(entry: CreateWishListItem): Promise<WishListItem> {
-    const [err, stockItem] = await this.client.sendInvoke<WishListItem>("wish_list_create", entry);
+  async getAll(query: TauriTypes.WishListControllerGetListParams): Promise<TauriTypes.WishListControllerGetListData> {
+    const [err, stockItems] = await this.client.sendInvoke<TauriTypes.WishListControllerGetListData>("get_wish_lists", {
+      query: this.client.convertToTauriQuery(query),
+    });
+    if (err) throw err;
+    return stockItems;
+  }
+  async create(entry: TauriTypes.CreateWishListItem): Promise<TauriTypes.WishListItem> {
+    const [err, stockItem] = await this.client.sendInvoke<TauriTypes.WishListItem>("wish_list_create", entry);
     if (err) throw err;
     return stockItem;
   }
 
-  async update(entry: UpdateWishListItem): Promise<WishListItem> {
-    const [err, stockItem] = await this.client.sendInvoke<WishListItem>("wish_list_update", entry);
+  async update(entry: TauriTypes.UpdateWishListItem): Promise<TauriTypes.WishListItem> {
+    const [err, stockItem] = await this.client.sendInvoke<TauriTypes.WishListItem>("wish_list_update", entry);
     if (err) throw err;
     return stockItem;
   }
 
-  async updateBulk(ids: number[], entry: UpdateWishListItem): Promise<number> {
+  async updateBulk(ids: number[], entry: TauriTypes.UpdateWishListItem): Promise<number> {
     const [err, stockItem] = await this.client.sendInvoke<number>("wish_list_update_bulk", { ...entry, ids });
     if (err) throw err;
     return stockItem;
   }
 
-  async delete(id: number): Promise<void> {
-    const [err, res] = await this.client.sendInvoke<void>("wish_list_delete", { id });
+  async delete(id: number): Promise<TauriTypes.WishListItem> {
+    const [err, res] = await this.client.sendInvoke<TauriTypes.WishListItem>("wish_list_delete", { id });
     if (err) throw err;
     return res;
   }
@@ -38,8 +45,8 @@ export class WishListModule {
     return res;
   }
 
-  async bought(entry: BoughtWishListItem): Promise<WishListItem> {
-    const [err, rep] = await this.client.sendInvoke<WishListItem>("wish_list_bought", { ...entry });
+  async bought(entry: TauriTypes.BoughtWishListItem): Promise<TauriTypes.WishListItem> {
+    const [err, rep] = await this.client.sendInvoke<TauriTypes.WishListItem>("wish_list_bought", { ...entry });
     if (err) throw err;
     return rep;
   }

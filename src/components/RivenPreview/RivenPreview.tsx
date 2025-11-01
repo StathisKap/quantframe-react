@@ -1,7 +1,7 @@
 import { Box, Collapse, PaperProps, Text } from "@mantine/core";
 import classes from "./RivenPreview.module.css";
-import { Wfm } from "$types/index";
-import { CacheRivenWeapon, CacheRivenAttribute, RivenAttribute, StockRiven } from "@api/types";
+import { RivenAttribute, WFMarketTypes } from "$types/index";
+import { TauriTypes } from "$types";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "@api/index";
@@ -9,9 +9,17 @@ import { SvgIcon, SvgType } from "@components/SvgIcon";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faArrowsRotate } from "@fortawesome/free-solid-svg-icons";
 import { useHover } from "@mantine/hooks";
+import faPolarityZenuri from "@icons/faPolarityZenuri";
+import faPolarityUnairu from "@icons/faPolarityUnairu";
+import faPolarityUmbra from "@icons/faPolarityUmbra";
+import faPolarityPenjaga from "@icons/faPolarityPenjaga";
+import faPolarityNaramon from "@icons/faPolarityNaramon";
+import faPolarityMadurai from "@icons/faPolarityMadurai";
+import faPolarityAura from "@icons/faPolarityAura";
+import faPolarityVazarin from "@icons/faPolarityVazarin";
 
 export type RivenPreviewProps = {
-  riven: Wfm.Auction<Wfm.AuctionOwner> | Wfm.Auction<string> | StockRiven;
+  riven: WFMarketTypes.Auction<WFMarketTypes.AuctionOwner> | WFMarketTypes.Auction<string> | TauriTypes.StockRiven;
   paperProps?: PaperProps;
 };
 
@@ -24,7 +32,7 @@ interface RivenAttributeWithUnits extends RivenAttribute {
 export function RivenPreview({ paperProps, riven }: RivenPreviewProps) {
   // State
   const { hovered, ref } = useHover();
-  const [weapon, setWeapon] = useState<CacheRivenWeapon | undefined>(undefined);
+  const [weapon, setWeapon] = useState<TauriTypes.CacheRivenWeapon | undefined>(undefined);
   const [polarity, setPolarity] = useState<string>("");
   const [modName, setModName] = useState<string>("");
   const [attributes, setAttributes] = useState<RivenAttributeWithUnits[]>([]);
@@ -32,20 +40,27 @@ export function RivenPreview({ paperProps, riven }: RivenPreviewProps) {
   const [reRolls, setReRolls] = useState<number>(0);
   const [rank, setRank] = useState<number>(0);
   // Fetch data from rust side
-  const { data: weapons } = useQuery<CacheRivenWeapon[], Error>({
+  const { data: weapons } = useQuery<TauriTypes.CacheRivenWeapon[], Error>({
     queryKey: ["cache_riven_weapons"],
     queryFn: () => api.cache.getRivenWeapons(),
   });
-  const { data: allAttributes } = useQuery<CacheRivenAttribute[], Error>({
+  const { data: allAttributes } = useQuery<TauriTypes.CacheRivenAttribute[], Error>({
     queryKey: ["cache_riven_attributes"],
     queryFn: () => api.cache.getRivenAttributes(),
   });
+  const GetUnitSymbol = (unit: string | undefined) => {
+    if (!unit) return "";
+    if (unit == "multiply") return "+";
+    if (unit == "percent") return "%";
+    if (unit == "seconds") return "sec";
+    return "";
+  };
   useEffect(() => {
     if (!weapons || !allAttributes) return;
     let weapon_url_name = "";
     // Check id type
     if (typeof riven.id == "string") {
-      const auction = riven as Wfm.Auction<Wfm.AuctionOwner>;
+      const auction = riven as WFMarketTypes.Auction<WFMarketTypes.AuctionOwner>;
       if (!auction.item.attributes) return;
       weapon_url_name = auction.item.weapon_url_name;
       setPolarity(auction.item.polarity);
@@ -53,13 +68,11 @@ export function RivenPreview({ paperProps, riven }: RivenPreviewProps) {
       setAttributes(
         auction.item.attributes?.map((item) => {
           const attribute = allAttributes?.find((attribute) => attribute.url_name == item.url_name);
-          let symbol = "";
-          if (attribute?.units == "multiply") symbol = "+";
-          if (attribute?.units == "percent") symbol = "%";
+          let symbol = GetUnitSymbol(attribute?.unit);
           return {
             ...item,
             effect: attribute?.effect || "",
-            units: attribute?.units || "",
+            units: attribute?.unit || "",
             symbol,
           };
         })
@@ -69,7 +82,7 @@ export function RivenPreview({ paperProps, riven }: RivenPreviewProps) {
       setRank(auction.item.mod_rank);
     }
     if (typeof riven.id == "number") {
-      const stockRiven = riven as StockRiven;
+      const stockRiven = riven as TauriTypes.StockRiven;
       weapon_url_name = stockRiven.wfm_weapon_url;
       setPolarity(stockRiven.polarity);
       setModName(stockRiven.mod_name);
@@ -77,13 +90,11 @@ export function RivenPreview({ paperProps, riven }: RivenPreviewProps) {
         setAttributes(
           stockRiven.attributes.map((item) => {
             const attribute = allAttributes?.find((attribute) => attribute.url_name == item.url_name);
-            let symbol = "";
-            if (attribute?.units == "multiply") symbol = "+";
-            if (attribute?.units == "percent") symbol = "%";
+            let symbol = GetUnitSymbol(attribute?.unit);
             return {
               ...item,
               effect: attribute?.effect || "",
-              units: attribute?.units || "",
+              units: attribute?.unit || "",
               symbol,
             };
           })
@@ -94,10 +105,22 @@ export function RivenPreview({ paperProps, riven }: RivenPreviewProps) {
     }
     if (weapons && weapon_url_name != "") setWeapon(weapons.find((item) => item.wfm_url_name == weapon_url_name));
   }, [riven, weapons]);
+  const polarizes: Record<string, any> = {
+    zenuri: faPolarityZenuri,
+    unairu: faPolarityUnairu,
+    umbra: faPolarityUmbra,
+    penjaga: faPolarityPenjaga,
+    naramon: faPolarityNaramon,
+    madurai: faPolarityMadurai,
+    aura: faPolarityAura,
+    vazarin: faPolarityVazarin,
+  };
   return (
     <Box {...paperProps} className={classes.root} ref={ref}>
       {polarity != "" && (
         <>
+          {/* <FontAwesomeIcon className={classes.polarity} icon={faEnvelope} />, */}
+          <FontAwesomeIcon className={classes.polarity} icon={polarizes[polarity]} />
           <SvgIcon
             className={classes.polarity}
             svgProp={{
@@ -120,8 +143,10 @@ export function RivenPreview({ paperProps, riven }: RivenPreviewProps) {
             {attributes.map((item, index) => {
               return (
                 <Text maw={"215"} truncate="end" key={index} className={classes.attribute_text}>
+                  {item.units == "multiply" && `${item.symbol}`}
                   {item.value}
-                  {item.symbol} {item.effect}
+                  {item.units != "multiply" && `${item.symbol}`}
+                  {" " + item.effect}
                 </Text>
               );
             })}

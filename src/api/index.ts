@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api";
+import { invoke } from "@tauri-apps/api/core";
 import { AppModule } from "./app";
 import { AuctionModule } from "./auction";
 import { AuthModule } from "./auth";
@@ -9,13 +9,16 @@ import { OrderModule } from "./order";
 import { StockModule } from "./stock";
 import { TransactionModule } from "./transaction";
 import { EventModule } from "./events";
-import { StatisticModule } from "./statistic";
+import { SummaryModule } from "./summary";
 import { CacheModule } from "./cache";
-import { ErrOrResult, QfSocketEventOperation } from "./types";
+import { ErrOrResult, TauriTypes } from "$types";
 import { LogModule } from "./log";
 import { AnalyticsModule } from "./analytics";
-import { WFMSocket } from "../models/wfmSocket";
 import { NotificationModule } from "./notification";
+import { ItemModule } from "./item";
+import { LogParserModule } from "./log_parser";
+import { RivenModule } from "./riven";
+import { UserModule } from "./user";
 
 export class TauriClient {
   constructor() {
@@ -31,10 +34,14 @@ export class TauriClient {
     this.transaction = new TransactionModule(this);
     this.events = new EventModule();
     this.notification = new NotificationModule(this);
-    this.statistic = new StatisticModule(this);
+    this.summary = new SummaryModule(this);
     this.cache = new CacheModule(this);
+    this.items = new ItemModule(this);
+    this.rivens = new RivenModule(this);
+    this.user = new UserModule(this);
     this.log = new LogModule(this);
     this.analytics = new AnalyticsModule(this);
+    this.log_parser = new LogParserModule(this);
   }
 
   async sendInvoke<T>(command: string, data?: any): Promise<ErrOrResult<T>> {
@@ -49,6 +56,13 @@ export class TauriClient {
           resolve([err, null] as ErrOrResult<T>);
         });
     });
+  }
+  async get<T>(path: string, parameters?: string[]): Promise<T> {
+    const url = `${path}${parameters && parameters.length > 0 ? `?${parameters.join("&")}` : ""}`;
+    const [err, result] = await this.sendInvoke<T>("qf_get", { url });
+    console.log(`GET ${url}`, result);
+    if (err) throw err;
+    return result;
   }
 
   convertToCamelCase(payload: Record<string, any>): Record<string, any> {
@@ -74,7 +88,27 @@ export class TauriClient {
 
     return camelCaseText;
   }
+  objectToParameters(obj: any): Array<string> {
+    const searchParams: string[] = [];
+    const entries = Object.entries(obj);
+    for (let index = 0; index < entries.length; index++) {
+      const element = entries[index];
+      // Skip undefined and empty arrays
+      if (element[1] === undefined || element[1] === "") continue;
+      if (Array.isArray(element[1])) {
+        const array = element[1] as any[];
+        if (array.length <= 0) continue;
 
+        searchParams.push(array.map((item) => `${element[0]}=${item}`).join("&"));
+      } else searchParams.push(`${element[0]}=${element[1]}`);
+    }
+    return searchParams;
+  }
+  convertToTauriQuery(query: TauriTypes.StockItemControllerGetListParams) {
+    let queryParams: any = { ...query };
+    queryParams.pagination = { page: query.page, limit: query.limit };
+    return queryParams;
+  }
   // Modules
   app: AppModule;
   auction: AuctionModule;
@@ -88,16 +122,19 @@ export class TauriClient {
   transaction: TransactionModule;
   events: EventModule;
   notification: NotificationModule;
-  statistic: StatisticModule;
+  summary: SummaryModule;
   cache: CacheModule;
   analytics: AnalyticsModule;
   log: LogModule;
+  items: ItemModule;
+  rivens: RivenModule;
+  user: UserModule;
+  log_parser: LogParserModule;
 }
 
 declare global {
   interface Window {
     api: TauriClient;
-    wfmSocket: WFMSocket;
     data: any;
   }
 }
@@ -105,15 +142,15 @@ declare global {
 window.api = new TauriClient();
 // (window as any).api = api as
 const OnTauriEvent = <T>(event: string, callback: (data: T) => void) => window.api.events.OnEvent(event, callback);
-const OnTauriDataEvent = <T>(event: string, callback: (data: { operation: QfSocketEventOperation; data: T }) => void) =>
+const OnTauriDataEvent = <T>(event: string, callback: (data: { operation: TauriTypes.EventOperations; data: T }) => void) =>
   window.api.events.OnEvent(event, callback);
 
 const OffTauriEvent = <T>(event: string, callback: (data: T) => void) => window.api.events.OffEvent(event, callback);
-const OffTauriDataEvent = <T>(event: string, callback: (data: { operation: QfSocketEventOperation; data: T }) => void) =>
+const OffTauriDataEvent = <T>(event: string, callback: (data: { operation: TauriTypes.EventOperations; data: T }) => void) =>
   window.api.events.OffEvent(event, callback);
 
 const SendTauriEvent = async (event: string, data?: any) => window.api.events.FireEvent(event, data);
-const SendTauriDataEvent = async (event: string, operation: QfSocketEventOperation, data: any) =>
+const SendTauriDataEvent = async (event: string, operation: TauriTypes.EventOperations, data: any) =>
   window.api.events.FireEvent(event, { operation, data });
 
 const WFMThumbnail = (thumb: string) => `https://warframe.market/static/assets/${thumb}`;

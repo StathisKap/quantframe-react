@@ -1,4 +1,5 @@
 use crate::utils::modules::error::{self, AppError};
+use crate::utils::modules::logger::LoggerOptions;
 use crate::wfm_client::types::user_profile::UserProfile;
 use crate::{helper, logger};
 use eyre::{eyre, Result};
@@ -36,15 +37,15 @@ pub struct AuthState {
     pub locale: String,
     pub platform: String,
     pub region: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "role")]
-    pub role: Option<crate::qf_client::types::user_role::UserRole>,
     #[serde(default = "AuthState::order_limit")]
     pub order_limit: i64,
     #[serde(default = "AuthState::auctions_limit")]
     pub auctions_limit: i64,
     pub unread_messages: i64,
-    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patreon_tier: Option<String>,
 }
 // Allow us to run AuthState::default()
 impl Default for AuthState {
@@ -67,11 +68,11 @@ impl Default for AuthState {
             platform: "".to_string(),
             region: "".to_string(),
             check_code: "".to_string(),
-            role: None,
             order_limit: 100,
             unread_messages: 0,
             auctions_limit: 50,
-            status: Some("invisible".to_string()),
+            patreon_tier: None,
+            permissions: None,
         }
     }
 }
@@ -118,6 +119,10 @@ impl AuthState {
         // TODO: Enable This
         self.check_code.clone()
         // digest(format!("hashStart-{}-hashEnd", self.check_code).as_bytes())
+    }
+
+    pub fn get_user_hash(&self) -> String {
+        digest(format!("hashStart-{}-{}-hashEnd", self.id, self.check_code).as_bytes())
     }
 
     pub fn get_device_id(&self) -> String {
@@ -173,10 +178,10 @@ impl AuthState {
         self.platform = "".to_string();
         self.region = "".to_string();
         self.check_code = "".to_string();
-        self.role = None;
         self.order_limit = 100;
         self.auctions_limit = 50;
-        self.status = Some("invisible".to_string());
+        self.permissions = None;
+        self.patreon_tier = None;
     }
 
     pub fn update_from_qf_user_profile(
@@ -188,7 +193,8 @@ impl AuthState {
         self.qf_banned = user_profile.banned;
         self.qf_banned_reason = user_profile.banned_reason.clone();
         self.qf_banned_until = user_profile.banned_until.clone();
-        self.role = user_profile.role.clone();
+        self.permissions = user_profile.permissions.clone();
+        self.patreon_tier = user_profile.patreon_tier.clone();
     }
 
     pub fn save_to_file(&self) -> Result<(), AppError> {
@@ -224,7 +230,7 @@ impl AuthState {
                 return Ok((auth, valid));
             }
             Err(e) => {
-                error::create_log_file("auth_state.log".to_string(), &e);
+                error::create_log_file("auth_state.log", &e);
                 Self::save_to_file(&AuthState::default())?;
             }
         }
@@ -264,7 +270,11 @@ impl AuthState {
         // Check for missing properties
         if !missing_properties.is_empty() {
             for property in missing_properties.clone() {
-                logger::warning_con("AuthState", &format!("Missing property: {}", property));
+                logger::warning(
+                    "AuthState",
+                    &format!("Missing property: {}", property),
+                    LoggerOptions::default(),
+                );
             }
         }
 

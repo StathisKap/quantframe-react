@@ -1,5 +1,5 @@
 import { Button, Collapse, Group, Paper, ScrollArea, Stack, Text, Textarea } from "@mantine/core";
-import { Wfm } from "$types/index";
+import { WFMarketTypes } from "$types/index";
 import classes from "./ChatRome.module.css";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faChevronLeft, faEllipsis } from "@fortawesome/free-solid-svg-icons";
@@ -9,11 +9,10 @@ import { Loading } from "../Loading";
 import { ChatMessage } from "../ChatMessage";
 import { useEffect, useRef, useState } from "react";
 import { useTranslateComponent } from "@hooks/useTranslate.hook";
-import { QfSocketEvent } from "@api/types";
-import { useWFMSocketContext } from "@contexts/wfmSocket.context";
+import { TauriTypes } from "$types";
 
 export type ChatRomeProps = {
-  chat: Wfm.ChatData;
+  chat: WFMarketTypes.ChatData;
   goBack: () => void;
 };
 
@@ -21,12 +20,9 @@ export const ChatRome = ({ chat, goBack }: ChatRomeProps) => {
   const defaultMsgLength = 30;
   const maxMsgLength = 400;
 
-  // Contexts
-  const { isConnected } = useWFMSocketContext();
-
   // State's
-  const [messages, setMessages] = useState<Wfm.ChatMessage[]>([]);
-  const [filteredMessages, setFilteredMessages] = useState<Wfm.ChatMessage[]>([]);
+  const [messages, setMessages] = useState<WFMarketTypes.ChatMessage[]>([]);
+  const [filteredMessages, setFilteredMessages] = useState<WFMarketTypes.ChatMessage[]>([]);
   const [showCount, setShowCount] = useState(defaultMsgLength);
   const [msg, setMsg] = useState<string>("");
   const [atBottom, setAtBottom] = useState(true);
@@ -68,7 +64,7 @@ export const ChatRome = ({ chat, goBack }: ChatRomeProps) => {
     return chat.chat_with.find((user) => user.id === id);
   };
 
-  const handleNewMessage = (newMessage: Wfm.ChatMessage) => {
+  const handleNewMessage = (newMessage: WFMarketTypes.ChatMessage) => {
     console.log("New message", newMessage);
     if (newMessage.chat_id != chat.id) return;
     setMessages((msgs) => {
@@ -81,8 +77,8 @@ export const ChatRome = ({ chat, goBack }: ChatRomeProps) => {
 
   // Hook on tauri events from rust side
   useEffect(() => {
-    OnTauriEvent(QfSocketEvent.ChatReceiveMessage, (data: Wfm.ChatMessage) => handleNewMessage(data));
-    OnTauriEvent(QfSocketEvent.ChatMessageSent, (data: Wfm.ChatMessageSent) => handleNewMessage(data.message));
+    OnTauriEvent(TauriTypes.Events.ChatReceiveMessage, (data: WFMarketTypes.ChatMessage) => handleNewMessage(data));
+    OnTauriEvent(TauriTypes.Events.ChatMessageSent, (data: WFMarketTypes.ChatMessageSent) => handleNewMessage(data.message));
     return () => {};
   }, []);
 
@@ -137,7 +133,6 @@ export const ChatRome = ({ chat, goBack }: ChatRomeProps) => {
         </ScrollArea>
         <Paper radius={0} display={"flex"} p={10} h={75}>
           <Textarea
-            disabled={!isConnected}
             w={"90%"}
             value={msg}
             onChange={(e) => setMsg(e.currentTarget.value)}

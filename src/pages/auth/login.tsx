@@ -5,9 +5,8 @@ import { useMutation } from "@tanstack/react-query";
 import { notifications } from "@mantine/notifications";
 import { useTranslatePages } from "@hooks/useTranslate.hook";
 import { TextTranslate } from "@components/TextTranslate";
-import { QfSocketEvent, QfSocketEventOperation, ResponseError } from "@api/types";
+import { ResponseError, TauriTypes } from "$types";
 import { useState } from "react";
-import wfmSocket from "@models/wfmSocket";
 
 export default function LoginPage() {
   // States
@@ -39,7 +38,8 @@ export default function LoginPage() {
       setIsBanned(u.qf_banned);
       if (u.qf_banned)
         return notifications.show({ title: useTranslateErrors("login.title"), message: useTranslateErrors("login.banned"), color: "red.7" });
-
+      if (!u.verification)
+        return notifications.show({ title: useTranslateErrors("login.title"), message: useTranslateErrors("login.verification"), color: "red.7" });
       setBannedReason(u.qf_banned_reason);
       notifications.show({
         title: useTranslateSuccess("login.title"),
@@ -62,20 +62,9 @@ export default function LoginPage() {
       setInterval(4);
       await api.cache.reload();
 
-      setProgressText(useTranslateProgress("refreshing_transaction"));
-      setInterval(5);
-      await api.transaction.reload();
-      setProgressText(useTranslateProgress("refreshing_stock_items"));
-      setInterval(6);
-      await api.stock.item.reload();
-      setProgressText(useTranslateProgress("refreshing_stock_riven"));
-      setInterval(7);
-      await api.stock.riven.reload();
-
       setProgressText(useTranslateProgress("login.progress_text_4"));
-      setInterval(8);
-      SendTauriDataEvent(QfSocketEvent.UpdateUser, QfSocketEventOperation.SET, u);
-      if (u.wfm_access_token) wfmSocket.updateToken(u.wfm_access_token);
+      setInterval(6);
+      SendTauriDataEvent(TauriTypes.Events.UpdateUser, TauriTypes.EventOperations.SET, u);
     },
     onError: (err: ResponseError) => {
       console.error(err);
@@ -103,7 +92,7 @@ export default function LoginPage() {
           <>
             {logInMutation.isPending && (
               <Progress.Root size="xl">
-                <Progress.Section value={(interval / 8) * 100}>
+                <Progress.Section value={(interval / 6) * 100}>
                   <Progress.Label>{progressText}</Progress.Label>
                 </Progress.Section>
               </Progress.Root>

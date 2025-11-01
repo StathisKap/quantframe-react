@@ -2,26 +2,28 @@ use std::{
     fs::File,
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock},
 };
 
 use eyre::eyre;
 
-use crate::{helper, logger, settings::SettingsState, utils::modules::error::AppError};
+use crate::{
+    helper, logger,
+    utils::modules::{error::AppError, logger::LoggerOptions, states},
+};
 
 use super::modules::{
-    arcane::ArcaneModule, arch_gun::ArchGunModule, arch_melee::ArchMeleeModule,
-    archwing::ArchwingModule, fish::FishModule, item_price::ItemPriceModule, melee::MeleeModule,
-    misc::MiscModule, mods::ModModule, parts::PartModule, pet::PetModule, primary::PrimaryModule,
-    relics::RelicsModule, resource::ResourceModule, riven::RivenModule, secondary::SecondaryModule,
-    sentinel::SentinelModule, skin::SkinModule, tradable_items::TradableItemModule,
-    warframe::WarframeModule,
+    all_items::AllItemsModule, arcane::ArcaneModule, arch_gun::ArchGunModule,
+    arch_melee::ArchMeleeModule, archwing::ArchwingModule, fish::FishModule,
+    item_price::ItemPriceModule, melee::MeleeModule, misc::MiscModule, mods::ModModule,
+    pet::PetModule, primary::PrimaryModule, relics::RelicsModule, resource::ResourceModule,
+    riven::RivenModule, secondary::SecondaryModule, sentinel::SentinelModule, skin::SkinModule,
+    tradable_items::TradableItemModule, warframe::WarframeModule,
 };
 
 #[derive(Clone, Debug)]
 pub struct CacheClient {
-    pub qf: Arc<Mutex<crate::qf_client::client::QFClient>>,
-    pub settings: Arc<Mutex<SettingsState>>,
+    all_items_module: Arc<RwLock<Option<AllItemsModule>>>,
     item_price_module: Arc<RwLock<Option<ItemPriceModule>>>,
     relics_module: Arc<RwLock<Option<RelicsModule>>>,
     riven_module: Arc<RwLock<Option<RivenModule>>>,
@@ -40,7 +42,6 @@ pub struct CacheClient {
     misc_module: Arc<RwLock<Option<MiscModule>>>,
     pet_module: Arc<RwLock<Option<PetModule>>>,
     resource_module: Arc<RwLock<Option<ResourceModule>>>,
-    part_module: Arc<RwLock<Option<PartModule>>>,
     fish_module: Arc<RwLock<Option<FishModule>>>,
     pub component: String,
     pub cache_path: PathBuf,
@@ -48,15 +49,11 @@ pub struct CacheClient {
 }
 
 impl CacheClient {
-    pub fn new(
-        qf: Arc<Mutex<crate::qf_client::client::QFClient>>,
-        settings: Arc<Mutex<SettingsState>>,
-    ) -> Self {
+    pub fn new() -> Self {
         CacheClient {
-            qf,
-            settings,
             component: "Cache".to_string(),
             md5_file: "cache_id.txt".to_string(),
+            all_items_module: Arc::new(RwLock::new(None)),
             item_price_module: Arc::new(RwLock::new(None)),
             riven_module: Arc::new(RwLock::new(None)),
             relics_module: Arc::new(RwLock::new(None)),
@@ -75,7 +72,6 @@ impl CacheClient {
             misc_module: Arc::new(RwLock::new(None)),
             pet_module: Arc::new(RwLock::new(None)),
             resource_module: Arc::new(RwLock::new(None)),
-            part_module: Arc::new(RwLock::new(None)),
             fish_module: Arc::new(RwLock::new(None)),
             cache_path: helper::get_app_storage_path().join("cache"),
         }
@@ -107,7 +103,7 @@ impl CacheClient {
     }
 
     pub async fn download_cache_data(&self) -> Result<(), AppError> {
-        let qf = self.qf.lock()?.clone();
+        let qf = states::qf_client()?;
         let zip_data = qf.cache().get_zip().await?;
 
         let reader = std::io::Cursor::new(zip_data);
@@ -140,84 +136,75 @@ impl CacheClient {
                     .map_err(|e| AppError::new(&self.component, eyre!(e.to_string())))?;
             }
         }
-        logger::info_con(&self.component, "Cache data downloaded and extracted");
+        logger::info(
+            &self.component,
+            "Cache data downloaded and extracted",
+            LoggerOptions::default(),
+        );
         Ok(())
     }
 
     pub async fn load(&self) -> Result<(), AppError> {
-        let qf = self.qf.lock()?.clone();
+        let qf = states::qf_client()?;
         let current_cache_id = self.get_current_cache_id()?;
-        logger::info_con(
-            &self.component,
-            format!("Current cache id: {}", current_cache_id).as_str(),
-        );
         let remote_cache_id = match qf.cache().get_cache_id().await {
             Ok(id) => id,
             Err(e) => {
-                logger::error_con(
+                logger::info(
                     &self.component,
                     format!(
                         "There was an error downloading the cache from the server: {:?}",
                         e
                     )
                     .as_str(),
+                    LoggerOptions::default(),
                 );
-                logger::info_con(&self.component, "Using the current cache data");
+                logger::info(
+                    &self.component,
+                    "Using the current cache data",
+                    LoggerOptions::default(),
+                );
                 current_cache_id.clone()
             }
         };
-        logger::info_con(
-            &self.component,
-            format!("Remote cache id: {}", remote_cache_id).as_str(),
-        );
         if current_cache_id != remote_cache_id {
-            logger::info_con(
+            logger::info(
                 &self.component,
                 "Cache id mismatch, downloading new cache data",
+                LoggerOptions::default(),
             );
             self.download_cache_data().await?;
             self.update_current_cache_id(remote_cache_id)?;
         }
         self.arcane().load()?;
-        logger::info_con(&self.component, "Arcane data loaded");
         self.warframe().load()?;
-        logger::info_con(&self.component, "Warframe data loaded");
         self.arch_gun().load()?;
-        logger::info_con(&self.component, "ArchGun data loaded");
         self.arch_melee().load()?;
-        logger::info_con(&self.component, "ArchMelee data loaded");
         self.archwing().load()?;
-        logger::info_con(&self.component, "Archwing data loaded");
         self.melee().load()?;
-        logger::info_con(&self.component, "Melee data loaded");
         self.mods().load()?;
-        logger::info_con(&self.component, "Mods data loaded");
         self.primary().load()?;
-        logger::info_con(&self.component, "Primary data loaded");
         self.secondary().load()?;
-        logger::info_con(&self.component, "Secondary data loaded");
         self.sentinel().load()?;
-        logger::info_con(&self.component, "Sentinel data loaded");
         self.tradable_items().load()?;
-        logger::info_con(&self.component, "Tradable items data loaded");
         self.skin().load()?;
-        logger::info_con(&self.component, "Skin data loaded");
         self.misc().load()?;
-        logger::info_con(&self.component, "Misc data loaded");
         self.pet().load()?;
-        logger::info_con(&self.component, "Pet data loaded");
         self.fish().load()?;
-        logger::info_con(&self.component, "Fish data loaded");
         self.resource().load()?;
-        logger::info_con(&self.component, "Resource data loaded");
         self.riven().load()?;
-        logger::info_con(&self.component, "Riven data loaded");
-        self.parts().load()?;
-        logger::info_con(&self.component, "Parts data loaded");
-        self.item_price().load().await?;
-        logger::info_con(&self.component, "Item price data loaded");
+        match self.item_price().load().await {
+            Ok(_) => {}
+            Err(e) => {
+                logger::warning(
+                    &self.component,
+                    format!("{}", e.to_string()).as_str(),
+                    LoggerOptions::default(),
+                );
+            }
+        }
         self.relics().load()?;
-        logger::info_con(&self.component, "Relics data loaded");
+        self.all_items().load()?;
         return Ok(());
     }
 
@@ -546,18 +533,24 @@ impl CacheClient {
         *self.skin_module.write().unwrap() = Some(module);
     }
 
-    pub fn parts(&self) -> PartModule {
-        // Lazily initialize PartModule if not already initialized
-        if self.part_module.read().unwrap().is_none() {
-            *self.part_module.write().unwrap() = Some(PartModule::new(self.clone()).clone());
+    pub fn all_items(&self) -> AllItemsModule {
+        // Lazily initialize AllItemsModule if not already initialized
+        if self.all_items_module.read().unwrap().is_none() {
+            *self.all_items_module.write().unwrap() =
+                Some(AllItemsModule::new(self.clone()).clone());
         }
 
         // Unwrapping is safe here because we ensured the order_module is initialized
-        self.part_module.read().unwrap().as_ref().unwrap().clone()
+        self.all_items_module
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone()
     }
-    pub fn update_part_module(&self, module: PartModule) {
-        // Update the stored PartModule
-        *self.part_module.write().unwrap() = Some(module);
+    pub fn update_all_items(&self, module: AllItemsModule) {
+        // Update the stored AllItemsModule
+        *self.all_items_module.write().unwrap() = Some(module);
     }
 
     pub fn read_text_from_file(&self, path: &PathBuf) -> Result<String, AppError> {

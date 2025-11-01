@@ -1,13 +1,14 @@
 pub mod auction;
+pub mod auction_collection;
 pub mod auction_item;
 pub mod auction_owner;
-pub mod auction_collection;
 pub mod chat_data;
 pub mod chat_message;
 pub mod chat_message_with;
 pub mod item;
 pub mod order;
 pub mod order_by_item;
+pub mod order_close;
 pub mod order_item;
 pub mod order_item_translation;
 pub mod orders;

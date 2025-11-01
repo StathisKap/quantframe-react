@@ -1,5 +1,5 @@
 import { upperFirst } from "@mantine/hooks";
-import { SubType } from "../api/types";
+import { TauriTypes } from "$types";
 
 export interface GroupByDateSettings {
   labels?: string[];
@@ -64,7 +64,7 @@ export const getTimeLeftString = (timeLeft: TimeSpan): string => {
  * @returns {Array} - An array where the first element is an object with keys being the formatted date and values being the items falling under that date,
  * and the second element is an array of labels for each group.
  */
-export const getGroupByDate = <T>(key: string, items: Array<T>, settings: GroupByDateSettings): [{ [key: string]: T[] }, string[]] => {
+export const GroupByDate = <T>(key: string, items: Array<T>, settings: GroupByDateSettings): [{ [key: string]: T[] }, string[]] => {
   const labels: string[] = [];
   const formatKey = (date: Date): string => {
     let key = "";
@@ -124,8 +124,8 @@ export const getCssVariable = (name: string) => {
   return getComputedStyle(document.documentElement).getPropertyValue(name);
 };
 
-export const GetSubTypeDisplay = (subType: SubType | undefined) => {
-  if (!subType) return "";
+export const GetSubTypeDisplay = (subType: TauriTypes.SubType | undefined) => {
+  if (!subType || Object.keys(subType).length == 0) return "";
   const { rank, variant, amber_stars, cyan_stars } = subType;
   let display = "";
   if (rank != undefined) display += `(R${rank})`;

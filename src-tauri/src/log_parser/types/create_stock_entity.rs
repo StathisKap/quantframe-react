@@ -5,13 +5,12 @@ use entity::{
         riven::{attribute::RivenAttribute, create::CreateStockRiven},
     },
     sub_type::SubType,
-    transaction,
     wish_list::create::CreateWishListItem,
 };
 use serde::{Deserialize, Serialize};
 use service::{sea_orm::DbConn, WishListQuery};
 
-use crate::{cache::client::CacheClient, utils::modules::error::AppError};
+use crate::utils::modules::{error::AppError, states};
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct CreateStockEntity {
@@ -223,7 +222,8 @@ impl CreateStockEntity {
             )
         }
     }
-    pub fn validate_entity(&mut self, cache: &CacheClient, by: &str) -> Result<(), AppError> {
+    pub fn validate_entity(&mut self, by: &str) -> Result<(), AppError> {
+        let cache = states::cache()?;
         if self.entity_type == StockType::Unknown {
             return Err(AppError::new(
                 "ValidateStockEntity",
@@ -257,56 +257,6 @@ impl CreateStockEntity {
             ));
         }
         Ok(())
-    }
-    pub fn to_transaction(
-        &self,
-        user_name: &str,
-        transaction_type: transaction::transaction::TransactionType,
-    ) -> Result<transaction::transaction::Model, AppError> {
-        if !self.is_validated {
-            return Err(AppError::new(
-                "CreateTransaction",
-                eyre::eyre!("Entity is not validated"),
-            ));
-        }
-
-        match self.entity_type {
-            StockType::Item => {
-                let item = self.to_stock_item();
-                let transaction = item.to_model().to_transaction(
-                    user_name,
-                    self.tags.clone(),
-                    self.quantity,
-                    self.bought.unwrap_or(0),
-                    transaction_type,
-                );
-                Ok(transaction)
-            }
-            StockType::WishList => {
-                let item = self.to_wish_item();
-                let transaction = item.to_model().to_transaction(
-                    user_name,
-                    self.tags.clone(),
-                    self.quantity,
-                    self.bought.unwrap_or(0),
-                    transaction_type,
-                );
-                Ok(transaction)
-            }
-            StockType::Riven => {
-                let riven = self.to_stock_riven();
-                let transaction = riven.to_model().to_transaction(
-                    user_name,
-                    self.bought.unwrap_or(0),
-                    transaction_type,
-                );
-                Ok(transaction)
-            }
-            _ => Err(AppError::new(
-                "CreateTransaction",
-                eyre::eyre!("Invalid entity type: {}", self.entity_type.as_str()),
-            )),
-        }
     }
     pub fn get_name(&self) -> Result<String, AppError> {
         if !self.is_validated {
@@ -349,5 +299,26 @@ impl CreateStockEntity {
             Ok(item) => Ok(item.is_some()),
             Err(_) => Ok(false),
         }
+    }
+    pub fn display(&self) -> String {
+        let mut name = match self.get_name() {
+            Ok(name) => {
+                let mut display = name.clone();
+                if self.is_hidden {
+                    display += " (Hidden)";
+                }
+                display
+            }
+            Err(_) => self.raw.clone(),
+        };
+        name.push_str(&format!(" | Quantity: {}", self.quantity));
+        if !self.unique_name.is_empty() {
+            name.push_str(&format!(" | Unique Name: {}", self.unique_name));
+        }
+        if let Some(sub_type) = &self.sub_type {
+            name.push_str(&format!(" | Sub Type: {}", sub_type.display()));
+        }
+        name += format!(" | Stock Type: {}", self.entity_type.as_str()).as_str();
+        name
     }
 }

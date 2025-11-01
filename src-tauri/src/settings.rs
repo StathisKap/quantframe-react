@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use crate::enums::trade_mode::TradeMode;
 use crate::enums::stock_mode::StockMode;
+use crate::enums::trade_mode::TradeMode;
 use crate::utils::modules::error::AppError;
+use crate::utils::modules::logger::LoggerOptions;
 use crate::{helper, logger};
 use eyre::eyre;
 
@@ -14,9 +15,9 @@ use eyre::eyre;
 pub struct SettingsState {
     // Debug Mode
     pub debug: Vec<String>,
-    pub tos_accepted: bool,
-    pub notification_ids: Vec<String>,
+    pub tos_uuid: String,
     pub cross_play: bool,
+    pub notification_ids: Vec<String>,
     // Warframe Log Path
     pub wf_log_path: String,
     pub http: HttpConfig,
@@ -26,7 +27,33 @@ pub struct SettingsState {
     pub analytics: AnalyticsSettings,
     // Generate Trade Message Settings
     pub generate_trade_msg: GenerateTradeMsgSettings,
+    pub summary_settings: SummarySettings,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SummarySettings {
+    pub resent_days: i64, // How many days to keep the summary
+    pub resent_transactions: i64, // How many transactions to keep in the summary
+    pub categories: Vec<SummaryCategorySetting>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SummaryCategorySetting {
+    pub icon: String,
+    pub name: String,
+    pub types: Vec<String>,
+    pub tags: Vec<String>,
+}
+impl SummaryCategorySetting {
+    pub fn new(icon: &str, name: &str, types: Vec<&str>, tags: Vec<&str>) -> Self {
+        Self {
+            icon: icon.to_string(),
+            name: name.to_string(),
+            types: types.iter().map(|s| s.to_string()).collect(),
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+    
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GenerateTradeMsgSettings {
     pub wts_items: TradeMsgSettings,
@@ -42,8 +69,8 @@ pub struct TradeMsgSettings {
 pub struct LiveScraperSettings {
     // Stock Mode
     pub stock_mode: StockMode,
-    // Trade Mode
-    pub trade_mode: TradeMode,
+    // Trade Mode's
+    pub trade_modes: Vec<TradeMode>,
     // Should delete other trade types, Ex: If you are selling, should you delete buy orders or wishlists etc
     pub should_delete_other_types: bool,
     // Discord Webhook
@@ -68,12 +95,12 @@ pub struct StockItemSettings {
     pub auto_trade: bool, // Will add order to you stock automatically or remove it if you have it
     pub min_sma: i64,
     pub min_profit: i64,
+    pub min_wtb_profit_margin: i64,
     pub auto_delete: bool,
     pub buy_quantity: i64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AnalyticsSettings {
-    pub transaction: bool,
     pub stock_item: bool,
     pub stock_riven: bool,
 }
@@ -82,6 +109,7 @@ pub struct StockRivenSettings {
     pub min_profit: i64,
     pub threshold_percentage: f64,
     pub limit_to: i64,
+    pub update_interval: i64, // in seconds
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,8 +138,8 @@ pub struct HttpConfig {
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
-            tos_accepted: false,
-            cross_play: true,
+            tos_uuid: "".to_string(),
+            cross_play: false,
             debug: vec!["*".to_string()],
             notification_ids: vec!["".to_string()],
             wf_log_path: "".to_string(),
@@ -135,7 +163,7 @@ impl Default for SettingsState {
             },
             live_scraper: LiveScraperSettings {
                 stock_mode: StockMode::All,
-                trade_mode: TradeMode::All,  
+                trade_modes: vec![TradeMode::Buy,TradeMode::Sell,TradeMode::WishList],
                 should_delete_other_types: true,              
                 webhook: "".to_string(),
                 stock_item: StockItemSettings {
@@ -150,6 +178,7 @@ impl Default for SettingsState {
                     price_shift_threshold: -1,
                     blacklist: vec![],
                     report_to_wfm: true,
+                    min_wtb_profit_margin: -1,
                     auto_trade: true,
                     auto_delete: true,
                 },
@@ -157,6 +186,7 @@ impl Default for SettingsState {
                     min_profit: 25,
                     threshold_percentage: 15.0,
                     limit_to: 5,
+                    update_interval: 120, // in seconds
                 },
             },
             notifications: Notifications {
@@ -187,9 +217,20 @@ impl Default for SettingsState {
                 },
             },
             analytics: AnalyticsSettings { 
-                transaction: true,
                 stock_item: true,
                 stock_riven: true,
+            },
+            summary_settings: SummarySettings {
+                resent_days: 7,
+                resent_transactions: 10,
+                categories: vec![
+                    SummaryCategorySetting::new("imgs/categories/mods.png","Mod",vec![],vec!["mod"]),
+                    SummaryCategorySetting::new("imgs/categories/arcane.png","Arcane",vec![],vec!["arcane_enhancement"]),
+                    SummaryCategorySetting::new("imgs/categories/set.png","Set",vec![],vec!["set"]),
+                    SummaryCategorySetting::new("imgs/categories/prime.png","Prime",vec![],vec!["prime"]),
+                    SummaryCategorySetting::new("imgs/categories/axi-intact.png","Relic",vec![],vec!["relic"]),
+                    SummaryCategorySetting::new("imgs/categories/rivenIcon2.png","Riven",vec!["riven"], vec![]),
+                ],
             },
         }
     }
@@ -215,6 +256,22 @@ impl SettingsState {
             default_settings.save_to_file()?;
             Ok(default_settings)
         }
+    }
+
+    pub fn is_wf_log_valid(&self) -> Result<bool, AppError> {
+        if !self.wf_log_path.is_empty() && !PathBuf::from(&self.wf_log_path).exists() {
+            return Err(AppError::new(
+                "Settings",
+                eyre::eyre!(format!(
+                    "Warframe EE.log path does not exist [J]{}[J]",
+                    json!({
+                        "i18n_key": "wf_log_path_not_exist",
+                        "path": self.wf_log_path
+                    })
+                )),
+            ));
+        }
+        Ok(true)
     }
 
     pub fn save_to_file(&self) -> Result<(), AppError> {
@@ -252,7 +309,11 @@ impl SettingsState {
         // Check for missing properties
         if !missing_properties.is_empty() {
             for property in missing_properties.clone() {
-                logger::warning_con("Settings", &format!("Missing property: {}", property));
+                logger::warning(
+                    "Settings",
+                    &format!("Missing property: {}", property),
+                    LoggerOptions::default(),
+                );
             }
         }
 
@@ -261,5 +322,9 @@ impl SettingsState {
             .map_err(|e| AppError::new("Settings", eyre!(e.to_string())))?;
 
         Ok((deserialized, missing_properties.is_empty()))
+    }
+
+    pub fn has_trade_mode(&self, mode: TradeMode) -> bool {
+        self.live_scraper.trade_modes.contains(&mode)
     }
 }

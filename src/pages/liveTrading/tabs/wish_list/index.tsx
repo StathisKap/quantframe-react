@@ -1,101 +1,104 @@
 import { useTranslateEnums, useTranslatePages } from "@hooks/useTranslate.hook";
 import { useEffect, useState } from "react";
-import { CreateWishListItem, WishListItem, StockStatus, UpdateWishListItem, BoughtWishListItem } from "@api/types";
 import { Box, Grid, Group, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { faEdit, faHammer, faInfo, faPen, faTrashCan } from "@fortawesome/free-solid-svg-icons";
+import { faEdit, faEye, faEyeSlash, faHammer, faInfo, faPen, faTrashCan } from "@fortawesome/free-solid-svg-icons";
 import { ColorInfo } from "@components/ColorInfo";
 import { ActionWithTooltip } from "@components/ActionWithTooltip";
-import { Loading } from "@components/Loading";
 import { useLiveScraperContext } from "@contexts/liveScraper.context";
-import { useStockContextContext } from "@contexts/stock.context";
-import { DataTableSearch } from "@components/DataTableSearch";
-import { Query } from "@utils/search.helper";
 import { CreateStockItemForm } from "@components/Forms/CreateStockItem";
-import { useMutation } from "@tanstack/react-query";
-import api from "@api/index";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import api, { OnTauriEvent } from "@api/index";
+import { TauriTypes } from "$types";
 import { useHasAlert } from "@hooks/useHasAlert.hook";
 import { TextTranslate } from "@components/TextTranslate";
 import { getCssVariable, GetSubTypeDisplay } from "@utils/helper";
-import { ButtonInterval } from "@components/ButtonInterval";
 import { modals } from "@mantine/modals";
 import { StatsWithSegments } from "@components/StatsWithSegments";
 import { WishItemInfo } from "@components/Modals/WishItemInfo";
 import classes from "../../LiveTrading.module.css";
+import { useLocalStorage } from "@mantine/hooks";
+import { SearchField } from "../../../../components/SearchField";
+import { DataTable } from "mantine-datatable";
+import { ButtonIntervals } from "../../../../components/ButtonIntervals";
 interface WishListPanelProps {}
 export const WishListPanel = ({}: WishListPanelProps) => {
   // States Context
-  const { wish_lists } = useStockContextContext();
   const { is_running } = useLiveScraperContext();
 
   // States For DataGrid
-  const [query, setQuery] = useState<string>("");
-  const [filters, setFilters] = useState<Query>({});
-  const [selectedRecords, setSelectedRecords] = useState<WishListItem[]>([]);
+  const [queryData, setQueryData] = useLocalStorage<TauriTypes.WishListControllerGetListParams>({
+    key: "wish_list_query_key",
+    getInitialValueInEffect: false,
+    defaultValue: { page: 1, limit: 10 },
+  });
+  const [loadingRows, setLoadingRows] = useState<string[]>([]);
 
-  const [filterStatus, setFilterStatus] = useState<StockStatus | undefined>(undefined);
-  const [statusCount, setStatusCount] = useState<{ [key: string]: number }>({}); // Count of each status
-
+  // States
+  const [selectedRecords, setSelectedRecords] = useState<TauriTypes.WishListItem[]>([]);
+  const [, setStatusCount] = useState<{ [key: string]: number }>({});
   const [segments, setSegments] = useState<{ label: string; count: number; part: number; color: string }[]>([]);
 
   // Translate general
   const useTranslate = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
     useTranslatePages(`liveTrading.${key}`, { ...context }, i18Key);
-  const useTranslateTabWishList = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
+  const useTranslateSegments = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
+    useTranslate(`segments.${key}`, { ...context }, i18Key);
+  const useTranslateTabItem = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
     useTranslate(`tabs.wish_list.${key}`, { ...context }, i18Key);
-  const useTranslateErrors = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
-    useTranslateTabWishList(`errors.${key}`, { ...context }, i18Key);
-  const useTranslateSuccess = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
-    useTranslateTabWishList(`success.${key}`, { ...context }, i18Key);
   const useTranslateStockStatus = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
     useTranslateEnums(`stock_status.${key}`, { ...context }, i18Key);
   const useTranslateDataGridColumns = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
-    useTranslateTabWishList(`datatable.columns.${key}`, { ...context }, i18Key);
+    useTranslateTabItem(`datatable.columns.${key}`, { ...context }, i18Key);
   const useTranslateDataGridBaseColumns = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
     useTranslate(`datatable.columns.${key}`, { ...context }, i18Key);
-  const useTranslateNotifications = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
-    useTranslate(`notifications.${key}`, { ...context }, i18Key);
+  const useTranslateErrors = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
+    useTranslateTabItem(`errors.${key}`, { ...context }, i18Key);
+  const useTranslateSuccess = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
+    useTranslateTabItem(`success.${key}`, { ...context }, i18Key);
   const useTranslateBasePrompt = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
     useTranslate(`prompts.${key}`, { ...context }, i18Key);
-  const useTranslateSegments = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
-    useTranslate(`segments.${key}`, { ...context }, i18Key);
+  // const useTranslateNotifications = (key: string, context?: { [key: string]: any }, i18Key?: boolean) =>
+  //   useTranslate(`notifications.${key}`, { ...context }, i18Key);
 
-  // Update Database Rows
+  // Queys
+  let { data, isFetching, refetch } = useQuery({
+    queryKey: ["wish_list", queryData.page, queryData.limit, queryData.sort_by, queryData.sort_direction, queryData.status],
+    queryFn: () => api.stock.wishList.getAll(queryData),
+    refetchOnWindowFocus: true,
+  });
+  let { data: overviewData, refetch: refetchOverview } = useQuery({
+    queryKey: ["wish_list_overview"],
+    queryFn: () => api.stock.wishList.getOverview(),
+    refetchOnWindowFocus: true,
+  });
+  // Member
   useEffect(() => {
-    let filter: Query = {
-      $or: [],
-    };
-    if (!wish_lists) return;
-
-    setStatusCount(
-      Object.values(StockStatus).reduce((acc, status) => {
-        acc[status] = wish_lists.filter((item) => item.status === status).length;
-        return acc;
-      }, {} as { [key: string]: number })
-    );
-
-    if (filterStatus) filter = { $match: { status: filterStatus } };
-    if (query) filter = { ...filter, $or: [{ item_name: { $contains: query } }] };
-
-    setFilters(filter);
-    setSelectedRecords([]);
-  }, [wish_lists, query, filterStatus]);
-  // Calculate Stats
-  useEffect(() => {
+    const wish_lists = data?.results || [];
     if (!wish_lists) return;
     const totalListedPrice = wish_lists.reduce((a, b) => a + (b.list_price || 0) * b.quantity, 0);
-    const totalTrades = wish_lists.filter((item) => item.status === StockStatus.Live).reduce((a, b) => a + b.quantity, 0) / 6;
+    const totalTrades = wish_lists.filter((item) => item.status === TauriTypes.StockStatus.Live).reduce((a, b) => a + b.quantity, 0) / 6;
     // Round up to the nearest whole number
     let totalTradesRounded = Math.ceil(totalTrades);
     setSegments([
       { label: useTranslateSegments("total_plat"), count: totalListedPrice, part: 0, color: getCssVariable("--positive-value") },
       { label: useTranslateSegments("trades"), count: totalTradesRounded, part: 0, color: getCssVariable("--profit-value") },
     ]);
-  }, [wish_lists]);
+    setStatusCount(
+      Object.values(TauriTypes.StockStatus).reduce((acc, status) => {
+        acc[status] = wish_lists.filter((item) => item.status === status).length;
+        return acc;
+      }, {} as { [key: string]: number })
+    );
+  }, [data]);
+  // Calculate Stats
+  useEffect(() => {}, [data]);
+
   // Mutations
   const createItemMutation = useMutation({
-    mutationFn: (data: CreateWishListItem) => api.stock.wishList.create(data),
+    mutationFn: (data: TauriTypes.CreateWishListItem) => api.stock.wishList.create(data),
     onSuccess: async (u) => {
+      refetch();
       notifications.show({
         title: useTranslateSuccess("create_item.title"),
         message: useTranslateSuccess("create_item.message", { name: u.item_name }),
@@ -108,8 +111,12 @@ export const WishListPanel = ({}: WishListPanelProps) => {
     },
   });
   const updateItemMutation = useMutation({
-    mutationFn: (data: UpdateWishListItem) => api.stock.wishList.update(data),
+    mutationFn: (data: TauriTypes.UpdateWishListItem) => api.stock.wishList.update(data),
+    onMutate: (row) => setLoadingRows((prev) => [...prev, `${row.id}`]),
+    onSettled: (_data, _error, variables) => setLoadingRows((prev) => prev.filter((id) => id !== `${variables.id}`)),
     onSuccess: async (u) => {
+      refetch();
+      refetchOverview();
       notifications.show({
         title: useTranslateSuccess("update_item.title"),
         message: useTranslateSuccess("update_item.message", { name: u.item_name }),
@@ -123,7 +130,11 @@ export const WishListPanel = ({}: WishListPanelProps) => {
   });
   const deleteItemMutation = useMutation({
     mutationFn: (id: number) => api.stock.wishList.delete(id),
+    onMutate: (row) => setLoadingRows((prev) => [...prev, `${row}`]),
+    onSettled: (_data, _error, row) => setLoadingRows((prev) => prev.filter((id) => id !== `${row}`)),
     onSuccess: async () => {
+      refetch();
+      refetchOverview();
       notifications.show({
         title: useTranslateSuccess("delete_item.title"),
         message: useTranslateSuccess("delete_item.message"),
@@ -136,8 +147,12 @@ export const WishListPanel = ({}: WishListPanelProps) => {
     },
   });
   const boughtItemMutation = useMutation({
-    mutationFn: (data: BoughtWishListItem) => api.stock.wishList.bought(data),
+    mutationFn: (data: TauriTypes.BoughtWishListItem) => api.stock.wishList.bought(data),
+    onMutate: (row) => setLoadingRows((prev) => [...prev, `${row.id}`]),
+    onSettled: (_data, _error, variables) => setLoadingRows((prev) => prev.filter((id) => id !== `${variables.id}`)),
     onSuccess: async (u) => {
+      refetch();
+      refetchOverview();
       notifications.show({
         title: useTranslateSuccess("sell_stock.title"),
         message: useTranslateSuccess("sell_stock.message", { name: u.item_name }),
@@ -176,14 +191,14 @@ export const WishListPanel = ({}: WishListPanelProps) => {
       },
     });
   };
-  const OpenInfoModal = (item: WishListItem) => {
+  const OpenInfoModal = (item: TauriTypes.WishListItem) => {
     modals.open({
       size: "100%",
       title: item.item_name,
       children: <WishItemInfo value={item} />,
     });
   };
-  const OpenBoughtModal = (stock: WishListItem) => {
+  const OpenBoughtModal = (stock: TauriTypes.WishListItem) => {
     modals.openContextModal({
       modal: "prompt",
       title: useTranslateBasePrompt("bought.title"),
@@ -208,6 +223,13 @@ export const WishListPanel = ({}: WishListPanelProps) => {
       },
     });
   };
+  useEffect(() => {
+    OnTauriEvent<any>(TauriTypes.Events.RefreshWishListItems, () => {
+      refetch();
+      refetchOverview();
+    });
+    return () => api.events.CleanEvent(TauriTypes.Events.RefreshWishListItems);
+  }, []);
   return (
     <Box>
       <Grid>
@@ -220,51 +242,58 @@ export const WishListPanel = ({}: WishListPanelProps) => {
             }}
           />
           <Group gap={"md"} mt={"md"}>
-            {[StockStatus.Pending, StockStatus.Live, StockStatus.NoSellers].map((status) => (
+            {overviewData?.map((entry) => (
               <ColorInfo
-                active={status == filterStatus}
-                key={status}
-                onClick={() => {
-                  setFilterStatus((s) => (s === status ? undefined : status));
-                }}
+                active={entry.key == queryData.status}
+                key={entry.key}
+                onClick={() =>
+                  setQueryData((prev) => ({
+                    ...prev,
+                    status: (entry.key as TauriTypes.StockStatus) == prev.status ? undefined : (entry.key as TauriTypes.StockStatus),
+                  }))
+                }
                 infoProps={{
                   "data-color-mode": "bg",
-                  "data-stock-status": status,
+                  "data-stock-status": entry.key,
                 }}
-                text={useTranslateStockStatus(`${status}`) + `${statusCount[status] == 0 ? "" : ` (${statusCount[status]})`}`}
-                tooltip={useTranslateStockStatus(`details.${status}`)}
+                text={useTranslateStockStatus(`${entry.key}`) + ` (${entry.count})`}
+                tooltip={useTranslateStockStatus(`details.${entry.key}`)}
               />
             ))}
           </Group>
         </Grid.Col>
         <Grid.Col span={4}>
-          <StatsWithSegments segments={segments} />
+          <StatsWithSegments showPercent segments={segments} />
         </Grid.Col>
       </Grid>
-      <DataTableSearch
+      <SearchField value={queryData.query || ""} onSearch={() => refetch()} onChange={(text) => setQueryData((prev) => ({ ...prev, query: text }))} />
+      <DataTable
         className={`${classes.databaseStockWishlist} ${useHasAlert() ? classes.alert : ""} ${is_running ? classes.running : ""}`}
-        mt={"md"}
-        records={wish_lists || []}
         customRowAttributes={(record) => {
           return {
             "data-color-mode": "box-shadow",
             "data-stock-status": record.status,
           };
         }}
-        query={query}
-        filters={filters}
-        onSearchChange={(text) => setQuery(text)}
-        customLoader={<Loading />}
-        idAccessor={"id"}
+        mt={"md"}
+        striped
+        fetching={isFetching}
+        records={data?.results || []}
+        page={queryData.page || 1}
+        onPageChange={(page) => setQueryData((prev) => ({ ...prev, page }))}
+        totalRecords={data?.total}
+        recordsPerPage={queryData.limit || 10}
+        recordsPerPageOptions={[5, 10, 15, 20, 25, 50, 100]}
+        onRecordsPerPageChange={(limit) => setQueryData((prev) => ({ ...prev, limit }))}
         selectedRecords={selectedRecords}
         onSelectedRecordsChange={setSelectedRecords}
-        onCellClick={({ record, column }) => {
-          switch (column.accessor) {
-            case "item_name":
-              navigator.clipboard.writeText(record.item_name);
-              notifications.show({ title: useTranslateNotifications("copied.title"), message: record.item_name, color: "green.7" });
-              break;
-          }
+        sortStatus={{
+          columnAccessor: queryData.sort_by || "name",
+          direction: queryData.sort_direction || "desc",
+        }}
+        onSortStatusChange={(sort) => {
+          if (!sort || !sort.columnAccessor) return;
+          setQueryData((prev) => ({ ...prev, sort_by: sort.columnAccessor as string, sort_direction: sort.direction }));
         }}
         // define columns
         columns={[
@@ -295,25 +324,13 @@ export const WishListPanel = ({}: WishListPanelProps) => {
               <Group gap={"sm"} justify="space-between">
                 <Text>{maximum_price || "N/A"}</Text>
                 <Group gap={"xs"}>
-                  <ButtonInterval
-                    color="red.7"
+                  <ButtonIntervals
                     intervals={[5, 10]}
-                    prefix="-"
-                    OnClick={async (int) => {
+                    minimum_price={maximum_price || 0}
+                    OnClick={async (val) => {
                       if (!id) return;
-                      maximum_price = maximum_price || 0;
-                      if (maximum_price - int < 0) return;
-                      await updateItemMutation.mutateAsync({ id, maximum_price: maximum_price - int });
-                    }}
-                  />
-                  <ButtonInterval
-                    color="green.7"
-                    intervals={[5, 10]}
-                    prefix="+"
-                    OnClick={async (int) => {
-                      if (!id) return;
-                      maximum_price = maximum_price || 0;
-                      await updateItemMutation.mutateAsync({ id, maximum_price: maximum_price + int });
+                      console.log("Update minimum price to:", val);
+                      await updateItemMutation.mutateAsync({ id, maximum_price: val });
                     }}
                   />
                   <ActionWithTooltip
@@ -338,12 +355,13 @@ export const WishListPanel = ({}: WishListPanelProps) => {
           {
             accessor: "actions",
             title: useTranslateDataGridBaseColumns("actions.title"),
-            width: 145,
+            width: 185,
             render: (row) => (
               <Group gap={"sm"} justify="flex-end">
                 <ActionWithTooltip
                   tooltip={useTranslateDataGridColumns("actions.buttons.bought_manual.tooltip")}
                   icon={faPen}
+                  loading={loadingRows.includes(`${row.id}`)}
                   color={"green.7"}
                   actionProps={{ size: "sm" }}
                   iconProps={{ size: "xs" }}
@@ -369,6 +387,7 @@ export const WishListPanel = ({}: WishListPanelProps) => {
                 <ActionWithTooltip
                   tooltip={useTranslateDataGridBaseColumns("actions.buttons.info.tooltip")}
                   icon={faInfo}
+                  loading={loadingRows.includes(`${row.id}`)}
                   actionProps={{ size: "sm" }}
                   iconProps={{ size: "xs" }}
                   onClick={(e) => {
@@ -377,9 +396,22 @@ export const WishListPanel = ({}: WishListPanelProps) => {
                   }}
                 />
                 <ActionWithTooltip
+                  tooltip={useTranslateDataGridBaseColumns(`actions.buttons.hide.${row.is_hidden ? "disabled_tooltip" : "enabled_tooltip"}`)}
+                  icon={row.is_hidden ? faEyeSlash : faEye}
+                  loading={loadingRows.includes(`${row.id}`)}
+                  color={`${row.is_hidden ? "red.7" : "green.7"}`}
+                  actionProps={{ size: "sm" }}
+                  iconProps={{ size: "xs" }}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    await updateItemMutation.mutateAsync({ id: row.id, is_hidden: !row.is_hidden });
+                  }}
+                />
+                <ActionWithTooltip
                   tooltip={useTranslateDataGridBaseColumns("actions.buttons.delete.tooltip")}
                   color={"red.7"}
                   icon={faTrashCan}
+                  loading={loadingRows.includes(`${row.id}`)}
                   actionProps={{ size: "sm" }}
                   iconProps={{ size: "xs" }}
                   onClick={async (e) => {

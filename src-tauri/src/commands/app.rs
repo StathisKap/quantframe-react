@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
-use service::{StockItemQuery, StockRivenQuery, TransactionQuery, WishListQuery};
+use service::WishListQuery;
 
 use crate::{
     app::client::AppState,
@@ -13,9 +13,12 @@ use crate::{
     settings::SettingsState,
     utils::{
         enums::ui_events::{UIEvent, UIOperationEvent},
-        modules::error::{self, AppError},
+        modules::{
+            error::{self, AppError},
+            states,
+        },
     },
-    wfm_client::client::WFMClient,
+    DATABASE,
 };
 
 pub fn save_auth_state(auth: tauri::State<'_, Arc<Mutex<AuthState>>>, auth_state: AuthState) {
@@ -28,21 +31,33 @@ pub fn save_auth_state(auth: tauri::State<'_, Arc<Mutex<AuthState>>>, auth_state
 pub async fn app_init(
     auth: tauri::State<'_, Arc<Mutex<AuthState>>>,
     settings: tauri::State<'_, Arc<Mutex<SettingsState>>>,
-    wfm: tauri::State<'_, Arc<Mutex<WFMClient>>>,
     qf: tauri::State<'_, Arc<Mutex<QFClient>>>,
     cache: tauri::State<'_, Arc<Mutex<CacheClient>>>,
     notify: tauri::State<'_, Arc<Mutex<NotifyClient>>>,
     app: tauri::State<'_, Arc<Mutex<AppState>>>,
     log_parser: tauri::State<'_, Arc<Mutex<log_parser::client::LogParser>>>,
 ) -> Result<bool, AppError> {
+    let conn = DATABASE.get().unwrap();
     let app = app.lock()?.clone();
     let notify = notify.lock()?.clone();
     let settings = settings.lock()?.clone();
-    let wfm = wfm.lock()?.clone();
+    let wfm = states::wfm_client().expect("Failed to get WFM client");
     let cache = cache.lock()?.clone();
     let qf = qf.lock()?.clone();
     let log_parser = log_parser.lock()?.clone();
     let mut auth_state = auth.lock()?.clone();
+
+    // Start Log Parser
+    notify
+        .gui()
+        .send_event(UIEvent::OnInitialize, Some(json!("log_parser")));
+    match log_parser.init() {
+        Ok(_) => {}
+        Err(e) => {
+            error::create_log_file("log_parser.log", &e);
+            return Err(e);
+        }
+    }
 
     // Send App Info to UI
     let app_info = app.get_app_info();
@@ -55,6 +70,7 @@ pub async fn app_init(
             "description": app_info.description,
             "authors": app_info.authors,
             "is_pre_release": app.is_pre_release,
+            "is_development": app.is_development,
         })),
     );
 
@@ -64,94 +80,15 @@ pub async fn app_init(
         UIOperationEvent::Set,
         Some(json!(&settings)),
     );
-
-    // Start Log Parser
-    notify
-        .gui()
-        .send_event(UIEvent::OnInitialize, Some(json!("log_parser")));
-    match log_parser.start_loop() {
-        Ok(_) => {}
-        Err(e) => {
-            error::create_log_file("log_parser.log".to_string(), &e);
-            return Err(e);
-        }
-    }
-
-    // Load Stock Items
-    notify
-        .gui()
-        .send_event(UIEvent::OnInitialize, Some(json!("stock_items")));
-    match StockItemQuery::get_all(&app.conn).await {
-        Ok(items) => {
-            // Send Stock Items to UI
-            notify.gui().send_event_update(
-                UIEvent::UpdateStockItems,
-                UIOperationEvent::Set,
-                Some(json!(&items)),
-            );
-        }
-        Err(e) => {
-            let error = AppError::new_db("StockItemQuery::get_all", e);
-            error::create_log_file("command.log".to_string(), &error);
-            return Err(error);
-        }
-    };
-    // Load Stock Rivens
-    notify
-        .gui()
-        .send_event(UIEvent::OnInitialize, Some(json!("stock_rivens")));
-    match StockRivenQuery::get_all(&app.conn).await {
-        Ok(items) => {
-            // Send Stock Rivens to UI
-            notify.gui().send_event_update(
-                UIEvent::UpdateStockRivens,
-                UIOperationEvent::Set,
-                Some(json!(&items)),
-            );
-        }
-        Err(e) => {
-            let error = AppError::new_db("StockRivenQuery::get_all", e);
-            error::create_log_file("command.log".to_string(), &error);
-            return Err(error);
-        }
-    };
-
-    // Load Transactions
-    notify
-        .gui()
-        .send_event(UIEvent::OnInitialize, Some(json!("transactions")));
-    match TransactionQuery::get_all(&app.conn).await {
-        Ok(transactions) => {
-            // Send Transactions to UI
-            notify.gui().send_event_update(
-                UIEvent::UpdateTransaction,
-                UIOperationEvent::Set,
-                Some(json!(&transactions)),
-            );
-        }
-        Err(e) => {
-            let error = AppError::new_db("TransactionQuery::get_all", e);
-            error::create_log_file("command.log".to_string(), &error);
-            return Err(error);
-        }
-    };
-
     // Load Wish List
     notify
         .gui()
         .send_event(UIEvent::OnInitialize, Some(json!("wish_list")));
-    match WishListQuery::get_all(&app.conn).await {
-        Ok(items) => {
-            // Send Transactions to UI
-            notify.gui().send_event_update(
-                UIEvent::UpdateWishList,
-                UIOperationEvent::Set,
-                Some(json!(&items)),
-            );
-        }
+    match WishListQuery::get_all(conn).await {
+        Ok(_) => {}
         Err(e) => {
             let error = AppError::new_db("WishListQuery::get_all", e);
-            error::create_log_file("command.log".to_string(), &error);
+            error::create_log_file("command.log", &error);
             return Err(error);
         }
     };
@@ -160,7 +97,7 @@ pub async fn app_init(
     match qf.alert().init() {
         Ok(_) => {}
         Err(e) => {
-            error::create_log_file("alerts.log".to_string(), &e);
+            error::create_log_file("alerts.log", &e);
             return Err(e);
         }
     }
@@ -172,17 +109,18 @@ pub async fn app_init(
     let wfm_user = match wfm.auth().validate().await {
         Ok(user) => user,
         Err(e) => {
-            error::create_log_file("wfm_validation.log".to_string(), &e);
+            error::create_log_file("wfm_validation.log", &e);
             return Err(e);
         }
     };
     auth_state.update_from_wfm_user_profile(&wfm_user, auth_state.wfm_access_token.clone());
+    save_auth_state(auth.clone(), auth_state.clone());
 
     // Validate QF Auth
     let mut qf_user = match qf.auth().validate().await {
         Ok(user) => user,
         Err(e) => {
-            error::create_log_file("qf_validate.log".to_string(), &e);
+            error::create_log_file("qf_validate.log", &e);
             return Err(e);
         }
     };
@@ -191,11 +129,7 @@ pub async fn app_init(
         // Login to QuantFrame
         qf_user = match qf
             .auth()
-            .login_or_register(
-                &auth_state.get_username(),
-                &auth_state.get_password(),
-                &auth_state.ingame_name.clone(),
-            )
+            .login_or_register(&auth_state.get_username(), &auth_state.get_password())
             .await
         {
             Ok(user) => {
@@ -203,7 +137,7 @@ pub async fn app_init(
                 Some(user.clone())
             }
             Err(e) => {
-                error::create_log_file("auth_login.log".to_string(), &e);
+                error::create_log_file("auth_login.log", &e);
                 return Err(e);
             }
         }
@@ -215,10 +149,12 @@ pub async fn app_init(
     }
 
     // Send User to UI
+    let mut user_payload = json!(&auth_state);
+    user_payload["user_hash"] = json!(&auth_state.get_user_hash());
     notify.gui().send_event_update(
         UIEvent::UpdateUser,
         UIOperationEvent::Set,
-        Some(json!(&auth_state.clone())),
+        Some(json!(&user_payload)),
     );
 
     // Save AuthState to Tauri State
@@ -230,11 +166,23 @@ pub async fn app_init(
         && !qf_user.unwrap().banned
         && !wfm_user.banned
     {
+        // Setup WebSocket Client
+        match wfm
+            .auth()
+            .setup_websocket(&auth_state.wfm_access_token.clone().unwrap())
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                error::create_log_file("ws_setup.log", &e);
+                return Err(e);
+            }
+        }
         // Initialize QF Analytics
         match qf.analytics().init() {
             Ok(_) => {}
             Err(e) => {
-                error::create_log_file("analytics.log".to_string(), &e);
+                error::create_log_file("analytics.log", &e);
                 return Err(e);
             }
         }
@@ -246,30 +194,10 @@ pub async fn app_init(
         match cache.load().await {
             Ok(_) => {}
             Err(e) => {
-                error::create_log_file("cache.log".to_string(), &e);
+                error::create_log_file("cache.log", &e);
                 return Err(e);
             }
         }
-
-        // Load User Orders
-        notify
-            .gui()
-            .send_event(UIEvent::OnInitialize, Some(json!("user_orders")));
-        let mut orders_vec = match wfm.orders().get_my_orders().await {
-            Ok(orders_vec) => orders_vec,
-            Err(e) => {
-                error::create_log_file("command.log".to_string(), &e);
-                return Err(e);
-            }
-        };
-        let mut orders = orders_vec.buy_orders;
-        orders.append(&mut orders_vec.sell_orders);
-        // Send Orders to UI
-        notify.gui().send_event_update(
-            UIEvent::UpdateOrders,
-            UIOperationEvent::Set,
-            Some(json!(&orders)),
-        );
 
         // Load User Auctions
         notify
@@ -285,7 +213,7 @@ pub async fn app_init(
                 );
             }
             Err(e) => {
-                error::create_log_file("command.log".to_string(), &e);
+                error::create_log_file("command.log", &e);
                 return Err(e);
             }
         };
@@ -304,10 +232,30 @@ pub async fn app_init(
                 );
             }
             Err(e) => {
-                error::create_log_file("command.log".to_string(), &e);
+                error::create_log_file("command.log", &e);
                 return Err(e);
             }
         };
+
+        // Load User Orders
+        notify
+            .gui()
+            .send_event(UIEvent::OnInitialize, Some(json!("user_orders")));
+        let mut orders_vec = match wfm.orders().get_my_orders().await {
+            Ok(orders_vec) => orders_vec,
+            Err(e) => {
+                error::create_log_file("command.log", &e);
+                return Err(e);
+            }
+        };
+        let mut orders = orders_vec.buy_orders;
+        orders.append(&mut orders_vec.sell_orders);
+        // Send Orders to UI
+        notify.gui().send_event_update(
+            UIEvent::UpdateOrders,
+            UIOperationEvent::Set,
+            Some(json!(&orders)),
+        );
     }
     // Save AuthState
     auth_state.save_to_file()?;
@@ -322,11 +270,21 @@ pub async fn app_update_settings(
 ) -> Result<bool, AppError> {
     let notify = notify.lock()?.clone();
     let arced_mutex = Arc::clone(&settings_state);
-    let mut my_lock = arced_mutex.lock()?;
+    let mut my_lock: std::sync::MutexGuard<'_, SettingsState> = arced_mutex.lock()?;
+
+    // Check if Warframe EE.log path exists
+    match settings.is_wf_log_valid() {
+        Ok(_) => {
+            my_lock.wf_log_path = settings.wf_log_path;
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    }
 
     // Set Logging Settings
     my_lock.debug = settings.debug;
-    my_lock.tos_accepted = settings.tos_accepted;
+    my_lock.tos_uuid = settings.tos_uuid;
 
     // Set Live Scraper Settings
     my_lock.live_scraper = settings.live_scraper;
@@ -337,6 +295,9 @@ pub async fn app_update_settings(
     // Set Analytics Settings
     my_lock.analytics = settings.analytics;
 
+    // Set Summary Settings
+    my_lock.summary_settings = settings.summary_settings;
+
     my_lock.save_to_file().expect("Could not save settings");
 
     notify.gui().send_event_update(
@@ -344,6 +305,7 @@ pub async fn app_update_settings(
         UIOperationEvent::Set,
         Some(json!(my_lock.clone())),
     );
+
     Ok(true)
 }
 

@@ -1,5 +1,5 @@
 import { Group, TextInput, Grid, Title, Tabs, Center, ScrollArea, Button } from "@mantine/core";
-import { CacheTradableItem, WishListItem } from "@api/types";
+import { TauriTypes } from "$types";
 import { useTranslateComponent, useTranslateEnums } from "@hooks/useTranslate.hook";
 import dayjs from "dayjs";
 import { PriceHistoryListItem } from "@components/PriceHistory";
@@ -7,13 +7,13 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "@api/index";
 import { OrderItem } from "@components/OrderItem";
-
+import { open } from "@tauri-apps/plugin-shell";
 export type WishItemInfoProps = {
-  value: WishListItem;
+  value: TauriTypes.WishListItem;
 };
 export function WishItemInfo({ value }: WishItemInfoProps) {
   //State
-  const [item, setItem] = useState<CacheTradableItem | undefined>(undefined);
+  const [item, setItem] = useState<TauriTypes.CacheTradableItem | undefined>(undefined);
 
   // Fetch data from rust side
   const { data } = useQuery({
@@ -79,7 +79,7 @@ export function WishItemInfo({ value }: WishItemInfoProps) {
                 color="blue"
                 variant="outline"
                 onClick={() => {
-                  window.open(`https://warframe.market/items/${value.wfm_url}`, "_blank");
+                  open(`https://warframe.market/items/${value.wfm_url}`);
                 }}
               >
                 {useTranslateButtons("wfm")}
@@ -89,7 +89,7 @@ export function WishItemInfo({ value }: WishItemInfoProps) {
                   color="blue"
                   variant="outline"
                   onClick={() => {
-                    window.open(item.wiki_url, "_blank");
+                    open(item.wiki_url);
                   }}
                 >
                   {useTranslateButtons("wiki")}

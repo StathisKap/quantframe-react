@@ -1,3 +1,4 @@
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 use entity::{
     stock::{
         item::{create::CreateStockItem, stock_item},
@@ -19,20 +20,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tauri::{Manager, State};
-
 use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
 use crate::{
-    app::client::AppState,
-    cache::client::CacheClient,
-    notification::client::NotifyClient,
     qf_client::client::QFClient,
     utils::{
         enums::ui_events::{UIEvent, UIOperationEvent},
-        modules::error::AppError,
+        modules::{error::AppError, states},
     },
-    wfm_client::{client::WFMClient, enums::order_type::OrderType, types::order::Order},
-    APP,
+    wfm_client::{enums::order_type::OrderType, types::order::Order},
+    APP, DATABASE,
 };
 
 pub static APP_PATH: &str = "dev.kenya.quantframe";
@@ -44,7 +41,13 @@ pub struct ZipEntry {
     pub content: Option<String>,
     pub include_dir: bool,
 }
-
+#[derive(Debug, PartialEq, Eq)]
+pub enum GroupBy {
+    Hour,
+    Day,
+    Month,
+    Year,
+}
 pub fn add_metric(key: &str, value: &str) {
     let key = key.to_string();
     let value = value.to_string();
@@ -59,10 +62,11 @@ pub fn add_metric(key: &str, value: &str) {
     });
 }
 pub fn get_device_id() -> String {
-    let home_dir = match tauri::api::path::home_dir() {
-        Some(val) => val,
-        None => {
-            panic!("Could not find app path");
+    let app = APP.get().unwrap();
+    let home_dir = match app.path().home_dir() {
+        Ok(val) => val,
+        Err(_) => {
+            panic!("Could not find home directory");
         }
     };
     let device_name = home_dir.file_name().unwrap().to_str().unwrap();
@@ -70,10 +74,11 @@ pub fn get_device_id() -> String {
 }
 
 pub fn dose_app_exist() -> bool {
-    let local_path = match tauri::api::path::local_data_dir() {
-        Some(val) => val,
-        None => {
-            panic!("Could not find app path");
+    let app = APP.get().unwrap();
+    let local_path = match app.path().local_data_dir() {
+        Ok(val) => val,
+        Err(_) => {
+            return false;
         }
     };
     let app_path = local_path.join(APP_PATH);
@@ -81,9 +86,10 @@ pub fn dose_app_exist() -> bool {
 }
 
 pub fn get_app_storage_path() -> PathBuf {
-    let local_path = match tauri::api::path::local_data_dir() {
-        Some(val) => val,
-        None => {
+    let app = APP.get().unwrap();
+    let local_path = match app.path().local_data_dir() {
+        Ok(val) => val,
+        Err(_) => {
             panic!("Could not find app path");
         }
     };
@@ -106,19 +112,21 @@ pub fn remove_special_characters(input: &str) -> String {
 }
 
 pub fn get_local_data_path() -> PathBuf {
-    let local_path = match tauri::api::path::local_data_dir() {
-        Some(val) => val,
-        None => {
-            panic!("Could not find app path");
+    let app = APP.get().unwrap();
+    let local_path = match app.path().local_data_dir() {
+        Ok(val) => val,
+        Err(_) => {
+            panic!("Could not find local data path");
         }
     };
     local_path
 }
 
 pub fn get_desktop_path() -> PathBuf {
-    let desktop_path = match tauri::api::path::desktop_dir() {
-        Some(val) => val,
-        None => {
+    let app = APP.get().unwrap();
+    let desktop_path = match app.path().desktop_dir() {
+        Ok(val) => val,
+        Err(_) => {
             panic!("Could not find desktop path");
         }
     };
@@ -454,25 +462,18 @@ pub fn open_json_and_replace(path: &str, properties: Vec<String>) -> Result<Valu
 }
 
 pub async fn progress_wfm_order(
-    notify: &NotifyClient,
-    wfm: &WFMClient,
-    url: &str,
+    wfm_id: &str,
     sub_type: Option<SubType>,
     quantity: i64,
     operation: OrderType,
-    need_update: bool,
     from: &str,
 ) -> Result<(String, Option<Order>), AppError> {
+    let wfm = states::wfm_client()?;
+    let notify = states::notify_client()?;
     // Process the order on WFM
     match wfm
         .orders()
-        .progress_order(
-            &url,
-            sub_type.clone(),
-            quantity,
-            operation.clone(),
-            need_update,
-        )
+        .progress_order(&wfm_id, sub_type.clone(), quantity, operation.clone())
         .await
     {
         Ok((operation, order)) => {
@@ -500,34 +501,22 @@ pub async fn progress_wfm_order(
 }
 
 pub async fn progress_transaction(
-    app: &AppState,
-    notify: &NotifyClient,
-    qf: &QFClient,
     transaction: &mut entity::transaction::transaction::Model,
     from: &str,
 ) -> Result<entity::transaction::transaction::Model, AppError> {
-    match TransactionMutation::create(&app.conn, &transaction).await {
+    let conn = DATABASE.get().unwrap();
+    let notify = states::notify_client()?;
+    match TransactionMutation::create(conn, &transaction).await {
         Ok(inserted) => {
             add_metric("Transaction_Create", from);
-            notify.gui().send_event_update(
-                UIEvent::UpdateTransaction,
-                UIOperationEvent::CreateOrUpdate,
-                Some(json!(inserted)),
-            );
             transaction.id = inserted.id;
         }
         Err(e) => {
             return Err(AppError::new_db("TransactionCreate", e));
         }
     };
+    notify.gui().send_event(UIEvent::RefreshTransactions, None);
 
-    // Add the transaction to the QuantFrame analytics stars
-    match qf.transaction().create_transaction(&transaction).await {
-        Ok(_) => {}
-        Err(e) => {
-            return Err(e);
-        }
-    }
     Ok(transaction.clone())
 }
 
@@ -538,14 +527,11 @@ pub async fn progress_wish_item(
     operation: OrderType,
     options: Vec<String>,
     from: &str,
-    app: &AppState,
-    cache: &CacheClient,
-    notify: &NotifyClient,
-    wfm: &WFMClient,
-    qf: &QFClient,
 ) -> Result<(wish_list::Model, Vec<String>), AppError> {
+    let conn = DATABASE.get().unwrap();
     let mut response = vec![];
-
+    let cache = states::cache()?;
+    let notify = states::notify_client()?;
     if operation == OrderType::Sell {
         return Err(AppError::new(
             "ProgressWishItem",
@@ -570,14 +556,14 @@ pub async fn progress_wish_item(
     // Progress the stock item based on the operation
 
     match WishListMutation::bought_by_url_and_sub_type(
-        &app.conn,
+        conn,
         wish_item.wfm_url.as_str(),
         wish_item.sub_type.clone(),
         wish_item.quantity,
     )
     .await
     {
-        Ok((operation, item)) => {
+        Ok((operation, _)) => {
             response.push(format!("WishItem_{}", operation));
             if operation == "NotFound" {
                 if !options.contains(&"WishContinueOnError".to_string()) {
@@ -589,18 +575,6 @@ pub async fn progress_wish_item(
                         )),
                     ));
                 }
-            } else if operation == "Deleted" {
-                notify.gui().send_event_update(
-                    UIEvent::UpdateWishList,
-                    UIOperationEvent::Delete,
-                    Some(json!({ "id": item.unwrap().id })),
-                );
-            } else if operation == "Updated" {
-                notify.gui().send_event_update(
-                    UIEvent::UpdateWishList,
-                    UIOperationEvent::CreateOrUpdate,
-                    Some(json!(item)),
-                );
             }
             add_metric("Wish_ItemBought", from);
             response.push("WishItem_Bought".to_string());
@@ -610,16 +584,14 @@ pub async fn progress_wish_item(
             return Err(AppError::new("WishItemCreate", eyre!(e)));
         }
     }
-
+    // Send Refresh Event to GUI
+    notify.gui().send_event(UIEvent::RefreshWishListItems, None);
     // Process the order on WFM
     match progress_wfm_order(
-        notify,
-        wfm,
-        entity.wfm_url.as_str(),
+        &entity.wfm_id.as_str(),
         entity.sub_type.clone(),
         entity.quantity,
         OrderType::Buy,
-        true,
         from,
     )
     .await
@@ -648,7 +620,7 @@ pub async fn progress_wish_item(
         TransactionType::Purchase,
     );
 
-    match progress_transaction(app, notify, qf, &mut transaction, from).await {
+    match progress_transaction(&mut transaction, from).await {
         Ok(_) => {}
         Err(e) => {
             response.push("TransactionDbError".to_string());
@@ -664,14 +636,13 @@ pub async fn progress_stock_item(
     user_name: &str,
     operation: OrderType,
     options: Vec<String>,
+    progress_wfm: bool,
     from: &str,
-    app: &AppState,
-    cache: &CacheClient,
-    notify: &NotifyClient,
-    wfm: &WFMClient,
-    qf: &QFClient,
 ) -> Result<(stock_item::Model, Vec<String>), AppError> {
+    let conn = DATABASE.get().unwrap();
     let mut response = vec![];
+    let cache = states::cache()?;
+    let notify = states::notify_client()?;
     // Validate the stock item
     match cache
         .tradable_items()
@@ -689,14 +660,14 @@ pub async fn progress_stock_item(
     // Progress the stock item based on the operation
     if operation == OrderType::Sell {
         match StockItemMutation::sold_by_url_and_sub_type(
-            &app.conn,
+            conn,
             &entity.wfm_url,
             entity.sub_type.clone(),
             entity.quantity,
         )
         .await
         {
-            Ok((operation, item)) => {
+            Ok((operation, _)) => {
                 response.push(format!("StockItem_{}", operation));
                 if operation == "NotFound" {
                     if !options.contains(&"StockContinueOnError".to_string()) {
@@ -708,18 +679,6 @@ pub async fn progress_stock_item(
                             )),
                         ));
                     }
-                } else if operation == "Deleted" {
-                    notify.gui().send_event_update(
-                        UIEvent::UpdateStockItems,
-                        UIOperationEvent::Delete,
-                        Some(json!({ "id": item.unwrap().id })),
-                    );
-                } else if operation == "Updated" {
-                    notify.gui().send_event_update(
-                        UIEvent::UpdateStockItems,
-                        UIOperationEvent::CreateOrUpdate,
-                        Some(json!(item)),
-                    );
                 }
                 add_metric(format!("StockItem_{}", operation).as_str(), from);
             }
@@ -729,15 +688,10 @@ pub async fn progress_stock_item(
             }
         }
     } else if operation == OrderType::Buy {
-        match StockItemMutation::add_item(&app.conn, stock.clone()).await {
-            Ok(inserted) => {
+        match StockItemMutation::add_item(conn, stock.clone()).await {
+            Ok(_) => {
                 let rep = "StockItem_Created".to_string();
                 response.push(rep.clone());
-                notify.gui().send_event_update(
-                    UIEvent::UpdateStockItems,
-                    UIOperationEvent::CreateOrUpdate,
-                    Some(json!(inserted)),
-                );
                 add_metric(rep.as_str(), from);
             }
             Err(e) => {
@@ -751,27 +705,28 @@ pub async fn progress_stock_item(
             eyre!("Invalid operation"),
         ));
     }
+    // Send Refresh Event to GUI
+    notify.gui().send_event(UIEvent::RefreshStockItems, None);
 
     // Process the order on WFM
-    match progress_wfm_order(
-        notify,
-        wfm,
-        entity.wfm_url.as_str(),
-        entity.sub_type.clone(),
-        entity.quantity,
-        operation.clone(),
-        operation == OrderType::Sell,
-        from,
-    )
-    .await
-    {
-        Ok((operation, _)) => {
-            response.push(format!("WFM_{}", operation));
-        }
-        Err(e) => {
-            response.push("WFM_Error".to_string());
-            if !options.contains(&"WFMContinueOnError".to_string()) {
-                return Err(e);
+    if progress_wfm {
+        match progress_wfm_order(
+            &entity.wfm_id.as_str(),
+            entity.sub_type.clone(),
+            entity.quantity,
+            operation.clone(),
+            from,
+        )
+        .await
+        {
+            Ok((operation, _)) => {
+                response.push(format!("WFM_{}", operation));
+            }
+            Err(e) => {
+                response.push("WFM_Error".to_string());
+                if !options.contains(&"WFMContinueOnError".to_string()) {
+                    return Err(e);
+                }
             }
         }
     }
@@ -794,7 +749,7 @@ pub async fn progress_stock_item(
         transaction_type,
     );
 
-    match progress_transaction(app, notify, qf, &mut transaction, from).await {
+    match progress_transaction(&mut transaction, from).await {
         Ok(_) => {}
         Err(e) => {
             response.push("Transaction_DbError".to_string());
@@ -810,13 +765,12 @@ pub async fn progress_stock_riven(
     user_name: &str,
     operation: OrderType,
     from: &str,
-    app: &AppState,
-    cache: &CacheClient,
-    notify: &NotifyClient,
-    wfm: &WFMClient,
-    qf: &QFClient,
 ) -> Result<(stock_riven::Model, Vec<String>), AppError> {
+    let conn = DATABASE.get().unwrap();
     let mut response = vec![];
+    let cache = states::cache()?;
+    let notify = states::notify_client()?;
+    let wfm = states::wfm_client()?;
     // Validate the stock item
     match cache.riven().validate_create_riven(entity, validate_by) {
         Ok(_) => {}
@@ -831,28 +785,18 @@ pub async fn progress_stock_riven(
     // Progress the stock riven based on the operation
     if operation == OrderType::Sell && entity.stock_id.is_some() {
         // Delete the stock from the database
-        match StockRivenMutation::delete(&app.conn, entity.stock_id.unwrap()).await {
+        match StockRivenMutation::delete(conn, entity.stock_id.unwrap()).await {
             Ok(_) => {
                 response.push("StockRiven_Deleted".to_string());
                 add_metric("StockRiven_Deleted", from);
-                notify.gui().send_event_update(
-                    UIEvent::UpdateStockRivens,
-                    UIOperationEvent::Delete,
-                    Some(json!({ "id": entity.stock_id })),
-                );
             }
             Err(e) => return Err(AppError::new("StockItemSell", eyre!(e))),
         }
     } else if operation == OrderType::Buy {
-        match StockRivenMutation::create(&app.conn, stock.clone()).await {
-            Ok(inserted) => {
+        match StockRivenMutation::create(conn, stock.clone()).await {
+            Ok(_) => {
                 add_metric("StockRiven_Create", from);
                 response.push("StockRivenAdd".to_string());
-                notify.gui().send_event_update(
-                    UIEvent::UpdateStockRivens,
-                    UIOperationEvent::CreateOrUpdate,
-                    Some(json!(inserted)),
-                );
             }
             Err(e) => {
                 response.push("StockDbError".to_string());
@@ -866,7 +810,7 @@ pub async fn progress_stock_riven(
             eyre!("Invalid operation"),
         ));
     }
-
+    notify.gui().send_event(UIEvent::RefreshStockRivens, None);
     // Process the action on WFM
     if operation == OrderType::Sell && entity.wfm_order_id.is_some() {
         let id = entity.wfm_order_id.clone().unwrap();
@@ -902,15 +846,10 @@ pub async fn progress_stock_riven(
     let mut transaction =
         stock.to_transaction(user_name, entity.bought.unwrap_or(0), transaction_type);
 
-    match TransactionMutation::create(&app.conn, &transaction).await {
+    match TransactionMutation::create(conn, &transaction).await {
         Ok(inserted) => {
             add_metric("Transaction_RivenCreate", from);
             response.push("TransactionCreated".to_string());
-            notify.gui().send_event_update(
-                UIEvent::UpdateTransaction,
-                UIOperationEvent::CreateOrUpdate,
-                Some(json!(inserted)),
-            );
             transaction.id = inserted.id;
         }
         Err(e) => {
@@ -918,18 +857,11 @@ pub async fn progress_stock_riven(
             return Err(AppError::new_db("StockItemCreate", e));
         }
     };
-    // Add the transaction to the QuantFrame analytics stars
-    match qf.transaction().create_transaction(&transaction).await {
-        Ok(_) => {}
-        Err(e) => {
-            response.push("TransactionAnalyticsError".to_string());
-            return Err(e);
-        }
-    }
+    notify.gui().send_event(UIEvent::RefreshTransactions, None);
     return Ok((stock, response));
 }
 
-// pub fn read_json_file<T: DeserializeOwned>(path: &PathBuf) -> Result<T, AppError> {
+// pub fn read_json_file<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Result<T, AppError> {
 //     // Check if the file exists
 //     if !path.exists() {
 //         return Err(AppError::new(
@@ -962,36 +894,155 @@ pub async fn progress_stock_riven(
 //     }
 // }
 pub fn calculate_average_of_top_lowest_prices(
-    prices: Vec<i64>,          // The list of prices to consider
-    limit_to: i64,             // Limit the number of auctions to consider
+    prices: Vec<i64>, // The list of prices to consider (assumed to be sorted by buyout_price ascending)
+    limit_to: i64,    // Limit the number of auctions to consider
     threshold_percentage: f64, // The threshold percentage to filter prices
 ) -> i64 {
     if prices.is_empty() {
         return -1;
     }
 
-    // Returning an Option<i64> in case there are no valid prices
-    // Get the top `limit_to` lowest starting prices
-    let mut top_price: Vec<i64> = prices.iter().cloned().take(limit_to as usize).collect();
+    // Get the top `limit_to` lowest starting prices directly, as prices is sorted
+    let mut top_price: Vec<i64> = prices.into_iter().take(limit_to as usize).collect();
 
-    // Find the maximum price in the top lowest prices
-    let max_price = *top_price.iter().max().unwrap_or(&0);
-
-    // Find the minimum price in the top lowest prices
-    let min_price = *top_price.iter().min().unwrap_or(&0);
-
-    // Calculate `threshold_percentage` of the maximum price
-    let threshold = max_price as f64 * (1.0 - threshold_percentage);
-
-    // Remove the minimum price if it is less than the threshold
-    if min_price < threshold as i64 {
-        top_price.retain(|&price| price != min_price);
-    }
-
-    // Ensure we have valid prices before calculating the average
+    // Ensure we have some prices after taking the limit
     if top_price.is_empty() {
         return -1;
     }
-    // Calculate and return the average price
+
+    // Find the minimum price in the top lowest prices.
+    // Since top_price is created from a sorted list and takes the lowest,
+    // the first element will be the minimum.
+    let min_price = *top_price.first().unwrap_or(&0);
+
+    // Calculate the threshold based on the minimum price.
+    // Prices should not deviate by more than threshold_percentage from the min_price.
+    // For example, if min_price is 100 and threshold_percentage is 0.10 (10%),
+    // the threshold will be 100 * (1.0 + 0.10) = 110.
+    // Any price above 110 will be filtered out.
+    let threshold = min_price as f64 * (1.0 + threshold_percentage);
+
+    // Retain prices that are less than or equal to the calculated threshold.
+    top_price.retain(|&price| price <= threshold as i64);
+
+    // Ensure we have valid prices after filtering.
+    if top_price.is_empty() {
+        return -1;
+    }
+
+    // Calculate and return the average price.
     top_price.iter().sum::<i64>() / top_price.len() as i64
+}
+
+pub fn group_by_date<T: Clone, F>(
+    items: &[T],
+    date_extractor: F,
+    group_by: Vec<GroupBy>,
+) -> HashMap<String, Vec<T>>
+where
+    F: Fn(&T) -> DateTime<Utc>,
+{
+    let mut map: HashMap<String, Vec<T>> = HashMap::new();
+
+    for item in items {
+        // Convert UTC to local time for grouping
+        let dt_local = date_extractor(item)
+            .with_timezone(&chrono::Local)
+            .naive_local();
+
+        let mut key = String::new();
+        // If group_by has day
+        if group_by.contains(&GroupBy::Year) {
+            if !key.is_empty() {
+                key.push(' ');
+            }
+            key.push_str(&format!("{}", dt_local.year()));
+        }
+        if group_by.contains(&GroupBy::Month) {
+            if !key.is_empty() {
+                key.push(' ');
+            }
+            key.push_str(&format!("{:02}", dt_local.month()));
+        }
+        if group_by.contains(&GroupBy::Day) {
+            if !key.is_empty() {
+                key.push(' ');
+            }
+            key.push_str(&format!("{:02}", dt_local.day()));
+        }
+        if group_by.contains(&GroupBy::Hour) {
+            if !key.is_empty() {
+                key.push(' ');
+            }
+            key.push_str(&format!("{:02}:00", dt_local.hour()));
+        }
+        map.entry(key).or_insert_with(Vec::new).push(item.clone());
+    }
+
+    map
+}
+pub fn get_start_of(group_by: GroupBy) -> DateTime<Utc> {
+    let now = Utc::now().naive_utc();
+    let date = match group_by {
+        GroupBy::Hour => now
+            .with_hour(0)
+            .unwrap()
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap(),
+        GroupBy::Day => now
+            .with_hour(0)
+            .unwrap()
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap(),
+        GroupBy::Month => now
+            .with_day(1)
+            .unwrap()
+            .with_hour(0)
+            .unwrap()
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap(),
+        GroupBy::Year => NaiveDate::from_ymd_opt(now.year(), 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+    };
+    DateTime::<Utc>::from_utc(date, Utc)
+}
+
+pub fn get_end_of(group_by: GroupBy) -> DateTime<Utc> {
+    let now = Utc::now().naive_utc();
+    let date = match group_by {
+        GroupBy::Hour => now
+            .with_hour(23)
+            .unwrap()
+            .with_minute(59)
+            .unwrap()
+            .with_second(59)
+            .unwrap(),
+        GroupBy::Day => now
+            .with_hour(23)
+            .unwrap()
+            .with_minute(59)
+            .unwrap()
+            .with_second(59)
+            .unwrap(),
+        GroupBy::Month => {
+            let last_day = NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
+                .unwrap()
+                .with_day(0)
+                .unwrap();
+            last_day.and_hms_opt(23, 59, 59).unwrap()
+        }
+        GroupBy::Year => NaiveDate::from_ymd_opt(now.year(), 12, 31)
+            .unwrap()
+            .and_hms_opt(23, 59, 59)
+            .unwrap(),
+    };
+    DateTime::<Utc>::from_utc(date, Utc)
 }

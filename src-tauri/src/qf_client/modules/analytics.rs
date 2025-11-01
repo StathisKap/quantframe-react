@@ -6,7 +6,6 @@ use std::{
 
 use eyre::eyre;
 use serde_json::{json, Value};
-use tauri::{Manager, State};
 use tokio::time::Instant;
 
 use crate::{
@@ -15,10 +14,10 @@ use crate::{
         enums::log_level::LogLevel,
         modules::{
             error::{self, ApiResult, AppError},
-            logger,
+            logger::{self, LoggerOptions},
+            states,
         },
     },
-    APP,
 };
 #[derive(Clone, Debug)]
 pub struct AnalyticsModule {
@@ -67,10 +66,6 @@ impl AnalyticsModule {
         self.update_state();
     }
     pub fn add_metric(&mut self, key: &str, value: &str) {
-        let settings = self.client.settings.lock().unwrap().clone();
-        if !settings.analytics.transaction && key.starts_with("Transaction_") {
-            return;
-        }
         let mut map = HashMap::new();
         map.insert(key.to_string(), value.to_string());
         if key == "Active_Page" {
@@ -81,7 +76,7 @@ impl AnalyticsModule {
         self.update_state();
     }
     pub fn init(&mut self) -> Result<(), AppError> {
-        let app = self.client.app.lock().unwrap();
+        let app = states::app_state()?;
         if self.is_init {
             return Ok(());
         }
@@ -92,28 +87,18 @@ impl AnalyticsModule {
         tauri::async_runtime::spawn({
             async move {
                 // Create a new instance of the QFClient and store it in the app state
-                let qf_handle = APP.get().expect("failed to get app handle");
-                let qf_state: State<Arc<Mutex<QFClient>>> = qf_handle.state();
-                let qf = qf_state.lock().expect("failed to lock app state").clone();
+                let qf = states::qf_client().expect("Failed to get qf client");
 
                 // Create Timer for sending metrics
                 let mut last_metric_time = Instant::now();
 
                 if is_first_install {
-                    logger::info_con(
-                        &&qf.analytics().get_component("init"),
-                        "Detected first install",
-                    );
-                    match qf
-                        .analytics()
-                        .try_send_analytics("install", 3, json!({}))
-                        .await
-                    {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error::create_log_file("analytics.log".to_string(), &e);
-                        }
-                    };
+                    qf.analytics()
+                        .metricAndLabelPairsScheduledToSend
+                        .push(HashMap::from([(
+                            "First_Install".to_string(),
+                            "true".to_string(),
+                        )]));
                 }
                 loop {
                     let send_metrics = qf.analytics().send_metrics;
@@ -121,45 +106,57 @@ impl AnalyticsModule {
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                         continue;
                     }
-                    if last_metric_time.elapsed() > Duration::from_secs(15)
-                        || qf.analytics().is_user_active()
-                    {
-                        if last_metric_time.elapsed() > Duration::from_secs(60)
-                            && qf.analytics().is_user_active()
-                        {
-                            continue;
-                        }
 
-                        last_metric_time = Instant::now();
-                        logger::info_con(
-                            &qf.analytics().get_component("TrySendAnalytics"),
-                            "Sending user activity",
-                        );
-                        match qf
-                            .analytics()
-                            .try_send_analytics(
-                                "metrics/periodic",
-                                3,
-                                json!(qf.analytics().metricAndLabelPairsScheduledToSend),
-                            )
-                            .await
-                        {
-                            Ok(_) => {
-                                qf.analytics().clear_metrics();
-                            }
-                            Err(e) => {
-                                if e.cause().contains("Unauthorized")
-                                    || e.cause().contains("Banned")
-                                    || e.cause().contains("WFMBanned")
-                                {
-                                    error::create_log_file("analytics.log".to_string(), &e);
-                                    break;
-                                }
-                                error::create_log_file("analytics.log".to_string(), &e);
-                            }
-                        };
+                    if last_metric_time.elapsed() < Duration::from_secs(15)
+                        || !qf.analytics().is_user_active()
+                    {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        continue;
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                    if last_metric_time.elapsed() < Duration::from_secs(60)
+                        && !qf.analytics().is_user_active()
+                    {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
+
+                    last_metric_time = Instant::now();
+                    // logger::info_con(
+                    //     &qf.analytics().get_component("TrySendAnalytics"),
+                    //     "Sending user activity",
+                    // );
+                    match qf
+                        .analytics()
+                        .try_send_analytics(
+                            "users/metrics/periodic",
+                            3,
+                            json!(qf.analytics().metricAndLabelPairsScheduledToSend),
+                        )
+                        .await
+                    {
+                        Ok(_) => {
+                            qf.analytics().clear_metrics();
+                        }
+                        Err(e) => {
+                            if e.cause().contains("Unauthorized")
+                                || e.cause().contains("Banned")
+                                || e.cause().contains("WFMBanned")
+                            {
+                                error::create_log_file("analytics.log", &e);
+                                break;
+                            } else if e.cause().contains("429") {
+                                logger::info(
+                                    &qf.analytics().get_component("TrySendAnalytics"),
+                                    "Rate limit reached, waiting for 60 seconds",
+                                    LoggerOptions::default(),
+                                );
+                                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                                continue;
+                            }
+                            error::create_log_file("analytics.log", &e);
+                        }
+                    };
                 }
                 qf.analytics().is_init = false;
             }
@@ -185,7 +182,7 @@ impl AnalyticsModule {
             let err = match self
                 .client
                 .post::<Value>(
-                    format!("analytics/{}?{}", url, parameters.join("&")).as_str(),
+                    format!("{}?{}", url, parameters.join("&")).as_str(),
                     data.clone(),
                 )
                 .await
@@ -205,12 +202,13 @@ impl AnalyticsModule {
                 return Err(err);
             }
             retry_count -= 1;
-            logger::warning_con(
+            logger::warning(
                 &self.get_component("TrySendAnalytics"),
                 &format!(
                     "Failed to send analytics, retrying in 5 seconds, retries left: {}",
                     retry_count
                 ),
+                LoggerOptions::default(),
             );
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }

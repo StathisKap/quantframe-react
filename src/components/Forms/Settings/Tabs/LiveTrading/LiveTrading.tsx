@@ -1,14 +1,14 @@
-import { Button, Group, NumberInput, Select, Stack, Tooltip, Text, Divider, Tabs, Box, Checkbox, Accordion } from "@mantine/core";
+import { Button, Group, NumberInput, Select, Stack, Tooltip, Text, Divider, Tabs, Box, Checkbox, Accordion, MultiSelect } from "@mantine/core";
 import { useForm } from "@mantine/form";
-import { TradeMode, SettingsLiveScraper, StockMode } from "@api/types";
+import { TauriTypes } from "$types";
 import { useTranslateEnums, useTranslateForms } from "@hooks/useTranslate.hook";
 import { useState } from "react";
 import { TooltipIcon } from "@components/TooltipIcon";
 import { SelectMultipleTradableItems } from "@components/SelectMultipleTradableItems";
 
 export type LiveTradingPanelProps = {
-  value: SettingsLiveScraper;
-  onSubmit: (value: SettingsLiveScraper) => void;
+  value: TauriTypes.SettingsLiveScraper;
+  onSubmit: (value: TauriTypes.SettingsLiveScraper) => void;
 };
 
 enum ViewMode {
@@ -70,26 +70,25 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                         label={useTranslateFormFields("stock_mode.label")}
                         description={useTranslateFormFields(`stock_mode.description.${form.values.stock_mode}`)}
                         placeholder={useTranslateFormFields("stock_mode.placeholder")}
-                        data={Object.values(StockMode).map((status) => {
+                        data={Object.values(TauriTypes.StockMode).map((status) => {
                           return { value: status, label: useTranslateStockMode(status) };
                         })}
                         value={form.values.stock_mode}
-                        onChange={(event) => form.setFieldValue("stock_mode", event as StockMode)}
+                        onChange={(event) => form.setFieldValue("stock_mode", event as TauriTypes.StockMode)}
                         error={form.errors.stock_mode && useTranslateFormFields("stock_mode.error")}
                         radius="md"
                       />
-                      <Select
-                        disabled={form.values.stock_mode != StockMode.Item && form.values.stock_mode != StockMode.All}
-                        allowDeselect={false}
-                        label={useTranslateFormFields("trade_mode.label")}
-                        description={useTranslateFormFields(`trade_mode.description.${form.values.trade_mode}`)}
-                        placeholder={useTranslateFormFields("trade_mode.placeholder")}
-                        data={Object.values(TradeMode).map((status) => {
+                      <MultiSelect
+                        disabled={form.values.stock_mode != TauriTypes.StockMode.Item && form.values.stock_mode != TauriTypes.StockMode.All}
+                        label={useTranslateFormFields("trade_modes.label")}
+                        w={250}
+                        description={useTranslateFormFields(`trade_modes.description`)}
+                        data={Object.values(TauriTypes.TradeMode).map((status) => {
                           return { value: status, label: useTranslateOrderMode(status) };
                         })}
-                        value={form.values.trade_mode}
-                        onChange={(event) => form.setFieldValue("trade_mode", event as TradeMode)}
-                        error={form.errors.trade_mode && useTranslateFormFields("trade_mode.error")}
+                        value={form.values.trade_modes}
+                        onChange={(event) => form.setFieldValue("trade_modes", event as TauriTypes.TradeMode[])}
+                        error={form.errors.trade_modes && useTranslateFormFields("trade_mode.error")}
                         radius="md"
                       />
                     </Group>
@@ -147,6 +146,8 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                     <Group gap="md">
                       <NumberInput
                         label={useTranslateFormFields("volume_threshold.label")}
+                        min={-1}
+                        max={999}
                         placeholder={useTranslateFormFields("volume_threshold.placeholder")}
                         value={form.values.stock_item.volume_threshold}
                         onChange={(event) => form.setFieldValue("stock_item.volume_threshold", Number(event))}
@@ -157,6 +158,8 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                       <NumberInput
                         label={useTranslateFormFields("range_threshold.label")}
                         placeholder={useTranslateFormFields("range_threshold.placeholder")}
+                        min={-1}
+                        max={999}
                         value={form.values.stock_item.range_threshold}
                         onChange={(event) => form.setFieldValue("stock_item.range_threshold", Number(event))}
                         error={form.errors.range_threshold && useTranslateFormFields("range_threshold.error")}
@@ -166,6 +169,7 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                       <NumberInput
                         label={useTranslateFormFields("avg_price_cap.label")}
                         placeholder={useTranslateFormFields("avg_price_cap.placeholder")}
+                        min={-1}
                         value={form.values.stock_item.avg_price_cap}
                         onChange={(event) => form.setFieldValue("stock_item.avg_price_cap", Number(event))}
                         error={form.errors.avg_price_cap && useTranslateFormFields("avg_price_cap.error")}
@@ -173,7 +177,19 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                         radius="md"
                       />
                       <NumberInput
+                        label={useTranslateFormFields("min_wtb_profit_margin.label")}
+                        placeholder={useTranslateFormFields("min_wtb_profit_margin.placeholder")}
+                        min={-1}
+                        value={form.values.stock_item.min_wtb_profit_margin}
+                        onChange={(event) => form.setFieldValue("stock_item.min_wtb_profit_margin", Number(event))}
+                        error={form.errors.min_wtb_profit_margin && useTranslateFormFields("min_wtb_profit_margin.error")}
+                        rightSection={<TooltipIcon label={useTranslateFormFields("min_wtb_profit_margin.tooltip")} />}
+                        radius="md"
+                      />
+                      <NumberInput
                         label={useTranslateFormFields("max_total_price_cap.label")}
+                        min={1}
+                        max={999999}
                         placeholder={useTranslateFormFields("max_total_price_cap.placeholder")}
                         value={form.values.stock_item.max_total_price_cap}
                         onChange={(event) => form.setFieldValue("stock_item.max_total_price_cap", Number(event))}
@@ -185,6 +201,8 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                     <Group gap="md">
                       <NumberInput
                         label={useTranslateFormFields("price_shift_threshold.label")}
+                        min={-1}
+                        max={100}
                         placeholder={useTranslateFormFields("price_shift_threshold.placeholder")}
                         value={form.values.stock_item.price_shift_threshold}
                         onChange={(event) => form.setFieldValue("stock_item.price_shift_threshold", Number(event))}
@@ -194,6 +212,7 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                       />
                       <NumberInput
                         label={useTranslateFormFields("trading_tax_cap.label")}
+                        min={-1}
                         placeholder={useTranslateFormFields("trading_tax_cap.placeholder")}
                         value={form.values.stock_item.trading_tax_cap}
                         onChange={(event) => form.setFieldValue("stock_item.trading_tax_cap", Number(event))}
@@ -204,6 +223,8 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                       <NumberInput
                         label={useTranslateFormFields("buy_quantity.label")}
                         placeholder={useTranslateFormFields("buy_quantity.placeholder")}
+                        min={1}
+                        max={100}
                         value={form.values.stock_item.buy_quantity}
                         onChange={(event) => form.setFieldValue("stock_item.buy_quantity", Number(event))}
                         error={form.errors.buy_quantity && useTranslateFormFields("buy_quantity.error")}
@@ -221,6 +242,7 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                       <NumberInput
                         label={useTranslateFormFields("item_min_profit.label")}
                         placeholder={useTranslateFormFields("item_min_profit.placeholder")}
+                        min={-1}
                         value={form.values.stock_item.min_profit}
                         onChange={(event) => form.setFieldValue("stock_item.min_profit", Number(event))}
                         error={form.errors.item_min_profit && useTranslateFormFields("item_min_profit.error")}
@@ -230,6 +252,7 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                       <NumberInput
                         label={useTranslateFormFields("min_sma.label")}
                         placeholder={useTranslateFormFields("min_sma.placeholder")}
+                        min={-1}
                         value={form.values.stock_item.min_sma}
                         onChange={(event) => form.setFieldValue("stock_item.min_sma", Number(event))}
                         error={form.errors.min_sma && useTranslateFormFields("min_sma.error")}
@@ -246,6 +269,7 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                 <NumberInput
                   label={useTranslateFormFields("riven_min_profit.label")}
                   placeholder={useTranslateFormFields("min_profit.placeholder")}
+                  min={-1}
                   value={form.values.stock_riven.min_profit}
                   onChange={(event) => form.setFieldValue("stock_riven.min_profit", Number(event))}
                   error={form.errors.min_profit && useTranslateFormFields("min_profit.error")}
@@ -253,17 +277,27 @@ export const LiveTradingPanel = ({ onSubmit, value }: LiveTradingPanelProps) => 
                   radius="md"
                 />
                 <NumberInput
+                  label={useTranslateFormFields("update_interval.label")}
+                  placeholder={useTranslateFormFields("update_interval.placeholder")}
+                  min={1}
+                  value={form.values.stock_riven.update_interval}
+                  onChange={(event) => form.setFieldValue("stock_riven.update_interval", Number(event))}
+                  error={form.errors.update_interval && useTranslateFormFields("update_interval.error")}
+                  radius="md"
+                />
+                <NumberInput
                   label={useTranslateFormFields("limit_to.label")}
                   placeholder={useTranslateFormFields("limit_to.placeholder")}
+                  min={1}
                   value={form.values.stock_riven.limit_to}
                   onChange={(event) => form.setFieldValue("stock_riven.limit_to", Number(event))}
                   error={form.errors.limit_to && useTranslateFormFields("limit_to.error")}
-                  rightSection={<TooltipIcon label={useTranslateFormFields("limit_to.tooltip", { count: form.values.stock_riven.limit_to })} />}
                   radius="md"
                 />
                 <NumberInput
                   label={useTranslateFormFields("threshold_percentage.label")}
                   placeholder={useTranslateFormFields("threshold_percentage.placeholder")}
+                  min={0.0}
                   value={form.values.stock_riven.threshold_percentage}
                   onChange={(event) => form.setFieldValue("stock_riven.threshold_percentage", Number(event))}
                   error={form.errors.threshold_percentage && useTranslateFormFields("threshold_percentage.error")}

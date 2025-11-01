@@ -8,7 +8,8 @@ use crate::{
         enums::log_level::LogLevel,
         modules::{
             error::{self, ApiResult, AppError},
-            logger,
+            logger::{self, LoggerOptions},
+            states,
         },
     },
 };
@@ -30,16 +31,7 @@ impl AuthModule {
         format!("{}:{}:{}", self.client.component, self.component, component)
     }
     pub async fn me(&self) -> Result<User, AppError> {
-        let app = self.client.app.lock()?.clone();
-
-        match self
-            .client
-            .get::<User>(
-                &format!("auth/profile?v={}", app.get_app_info().version),
-                false,
-            )
-            .await
-        {
+        match self.client.get::<User>("auth/me", false).await {
             Ok(ApiResult::Success(user, _)) => {
                 return Ok(user);
             }
@@ -59,18 +51,10 @@ impl AuthModule {
             Err(e) => return Err(e),
         };
     }
-    pub async fn login(
-        &self,
-        username: &str,
-        password: &str,
-        in_game_name: &str,
-    ) -> Result<User, AppError> {
-        let app = self.client.app.lock()?.clone();
+    pub async fn login(&self, username: &str, password: &str) -> Result<User, AppError> {
         let body = json!({
             "username": username,
-            "password": password,
-            "ingame_name": in_game_name,
-            "current_version": app.get_app_info().version.to_string(),
+            "password": password
         });
         match self.client.post::<User>("auth/login", body).await {
             Ok(ApiResult::Success(user, _)) => {
@@ -107,54 +91,40 @@ impl AuthModule {
         &self,
         username: &str,
         password: &str,
-        in_game_name: &str,
     ) -> Result<User, AppError> {
         // Try to login first
-        match self.login(username, password, in_game_name).await {
+        match self.login(username, password).await {
             Ok(user) => {
                 self.client.analytics().set_send_metrics(true);
                 return Ok(user);
             }
             Err(e) => {
                 if e.log_level() == LogLevel::Critical {
-                    error::create_log_file("auth_login.log".to_string(), &e);
+                    error::create_log_file("auth_login.log", &e);
                     return Err(e);
                 }
             }
         };
         // Try to register if login fails
-        match self.register(username, password, in_game_name).await {
+        match self.register(username, password).await {
             Ok(user) => {
                 return Ok(user);
             }
             Err(e) => {
                 if e.log_level() == LogLevel::Critical {
-                    error::create_log_file("auth_register.log".to_string(), &e);
+                    error::create_log_file("auth_register.log", &e);
                 }
                 return Err(e);
             }
         };
     }
-    pub async fn register(
-        &self,
-        username: &str,
-        password: &str,
-        in_game_name: &str,
-    ) -> Result<User, AppError> {
-        let app = self.client.app.lock()?.clone();
+    pub async fn register(&self, username: &str, password: &str) -> Result<User, AppError> {
         let body = json!({
             "username": username,
             "password": password,
-            "password_confirmation": password,
-            "ingame_name": in_game_name,
-            "current_version": app.get_app_info().version.to_string(),
         });
 
-        let (user, _): (User, HeaderMap) = match self
-            .client
-            .put::<User>("auth/registration", Some(body))
-            .await
-        {
+        let (user, _): (User, HeaderMap) = match self.client.post::<User>("users", body).await {
             Ok(ApiResult::Success(user, headers)) => (user, headers),
             Ok(ApiResult::Error(e, _headers)) => {
                 return Err(self.client.create_api_error(
@@ -169,22 +139,30 @@ impl AuthModule {
         return Ok(user);
     }
     pub async fn validate(&self) -> Result<Option<User>, AppError> {
-        let mut auth = self.client.auth.lock()?.clone();
+        let mut auth = states::auth()?;
         // Validate Auth
         let user = match self.me().await {
             Ok(user) => Some(user),
             Err(e) => {
                 if e.log_level() == LogLevel::Critical {
-                    error::create_log_file("qf_validate.log".to_string(), &e);
+                    error::create_log_file("qf_validate.log", &e);
                     return Err(e);
                 }
                 None
             }
         };
         if user.is_some() {
-            logger::info_con(&self.get_component("Validate"), "User is logged in");
+            logger::info(
+                &self.get_component("Validate"),
+                "User is logged in",
+                LoggerOptions::default(),
+            );
         } else {
-            logger::warning_con(&self.get_component("Validate"), "User is not logged in");
+            logger::warning(
+                &self.get_component("Validate"),
+                "User is not logged in",
+                LoggerOptions::default(),
+            );
             auth.reset();
         }
         return Ok(user);
